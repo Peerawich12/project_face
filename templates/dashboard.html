@@ -3,314 +3,1040 @@
 <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>ระบบตรวจจับใบหน้าเรียลไทม์ (Capture -> Save Folder -> Process Array)</title>
+    <title>Project Face — ระบบเช็คชื่อและตรวจจับใบหน้าอัตโนมัติ</title>
+    <!-- Tailwind CSS Play CDN -->
     <script src="https://cdn.tailwindcss.com"></script>
-    <link href="https://fonts.googleapis.com/css2?family=Sarabun:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    <!-- Google Fonts: IBM Plex Sans Thai & Sarabun -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+Thai:wght@300;400;500;600;700&family=Sarabun:wght@300;400;500;600;700&display=swap" rel="stylesheet">
     <style>
-        body { font-family: 'Sarabun', sans-serif; }
+        body {
+            font-family: 'IBM Plex Sans Thai', 'Sarabun', sans-serif;
+        }
+        /* Custom scrollbar for clean UI */
+        ::-webkit-scrollbar {
+            width: 6px;
+            height: 6px;
+        }
+        ::-webkit-scrollbar-track {
+            background: #f1f5f9;
+        }
+        ::-webkit-scrollbar-thumb {
+            background: #cbd5e1;
+            border-radius: 9999px;
+        }
+        ::-webkit-scrollbar-thumb:hover {
+            background: #94a3b8;
+        }
     </style>
 </head>
-<body class="bg-slate-100 text-slate-800 min-h-screen flex flex-col">
-    <!-- Header -->
-    <header class="bg-indigo-900 text-white shadow-md">
-        <div class="max-w-7xl mx-auto px-4 py-4 flex flex-wrap justify-between items-center gap-4">
+<body class="bg-slate-50 text-slate-800 min-h-screen flex flex-col antialiased">
+
+    <!-- ========================================== -->
+    <!-- TOP NAVIGATION BAR                         -->
+    <!-- ========================================== -->
+    <header class="sticky top-0 z-40 bg-white/95 backdrop-blur border-b border-slate-200 shadow-[0_1px_3px_rgba(0,0,0,0.03)]">
+        <div class="max-w-7xl mx-auto px-4 sm:px-6 h-16 flex items-center justify-between gap-4">
+            
+            <!-- Left: Logo & Project Face Title & Dynamic Live Indicator -->
             <div class="flex items-center gap-3">
-                <div class="w-10 h-10 rounded-xl bg-indigo-600 flex items-center justify-center font-bold text-xl shadow">
-                    📷
+                <div class="w-9 h-9 rounded-xl bg-slate-900 text-white flex items-center justify-center shadow-sm flex-shrink-0">
+                    <!-- Lucide: Camera -->
+                    <svg class="w-5 h-5 text-white" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <path d="M14.5 4h-5L7 7H4a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2h-3l-2.5-3z"/>
+                        <circle cx="12" cy="13" r="3"/>
+                    </svg>
                 </div>
-                <div>
-                    <h1 class="text-xl font-bold tracking-wide">
-                        ระบบตรวจจับใบหน้าเรียลไทม์ (Capture ➔ Save in Folder ➔ Process Array)
-                    </h1>
-                    <p class="text-xs text-indigo-200">
-                        แสดงเฉพาะกรอบและป้ายชื่อรอบใบหน้า (ไม่มีเส้นบนหน้า) • ถ่ายรูปเข้าโฟลเดอร์ <code>faces/</code> แล้วแปลงเป็น Array ทันที
-                    </p>
+                <div class="flex items-center gap-2.5">
+                    <span class="text-base sm:text-lg font-bold text-slate-900 tracking-tight">Project Face</span>
+                    <!-- Dynamic Live Indicator -->
+                    <div id="nav-live-wrapper" class="flex items-center gap-1.5 px-2 py-0.5 rounded-full border border-slate-200 bg-slate-50 text-xs font-medium">
+                        <span id="nav-live-dot" class="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span>
+                        <span id="nav-live-text" class="text-emerald-700 font-semibold">สด (Live)</span>
+                    </div>
                 </div>
             </div>
 
-            <div class="flex flex-wrap items-center gap-2">
-                <button onclick="syncFolderNow()" class="text-xs bg-indigo-600 hover:bg-indigo-500 px-3.5 py-1.5 rounded-lg font-medium transition">
-                    📂 Import รูปจากโฟลเดอร์ faces/ ➔ Array
+            <!-- Center: Navigation Tabs (Pill Style) -->
+            <nav class="flex items-center p-1 bg-slate-100/90 border border-slate-200 rounded-xl text-xs sm:text-sm font-medium">
+                <button
+                    id="tab-btn-dashboard"
+                    onclick="switchTab('dashboard')"
+                    class="px-3 sm:px-4 py-1.5 rounded-lg transition-all text-slate-800 bg-white shadow-sm font-semibold">
+                    ภาพรวม
                 </button>
-                <button onclick="resetTest()" class="text-xs bg-rose-600 hover:bg-rose-500 px-3.5 py-1.5 rounded-lg font-medium transition">
-                    🗑️ รีเซ็ตผลสแกนวันนี้
+                <button
+                    id="tab-btn-attendance"
+                    onclick="switchTab('attendance')"
+                    class="px-3 sm:px-4 py-1.5 rounded-lg transition-all text-slate-600 hover:text-slate-900">
+                    การเข้าเรียน
                 </button>
+                <button
+                    id="tab-btn-camera"
+                    onclick="switchTab('camera')"
+                    class="px-3 sm:px-4 py-1.5 rounded-lg transition-all text-slate-600 hover:text-slate-900">
+                    กล้องและลงทะเบียน
+                </button>
+            </nav>
+
+            <!-- Right: User Profile (Rendered only if supported by actual data) -->
+            <div class="hidden sm:flex items-center gap-2">
+                {% if user_profile %}
+                <div class="flex items-center gap-2 px-3 py-1.5 bg-slate-100 rounded-xl border border-slate-200 text-xs text-slate-700">
+                    <!-- Lucide: User -->
+                    <svg class="w-3.5 h-3.5 text-slate-500" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <path d="M19 21v-2a4 4 0 0 0-4-4H9a4 4 0 0 0-4 4v2"/>
+                        <circle cx="12" cy="7" r="4"/>
+                    </svg>
+                    <span class="font-medium">{{ user_profile.name }}</span>
+                </div>
+                {% endif %}
             </div>
+
         </div>
     </header>
 
-    <main class="max-w-7xl mx-auto w-full px-4 py-6 flex-1 space-y-6">
-        <!-- 3 Metrics -->
-        <section class="grid grid-cols-1 md:grid-cols-3 gap-5">
-            <div class="bg-white rounded-2xl p-5 shadow-sm border border-slate-200 flex items-center justify-between">
-                <div>
-                    <p class="text-sm font-semibold text-slate-500">จำนวนคนที่บันทึกไว้ (Total People)</p>
-                    <p id="metric-total" class="text-4xl font-extrabold text-slate-800 mt-1">{{ metrics.total_students }}</p>
-                    <p class="text-xs text-slate-400 mt-1">ในโฟลเดอร์ <code>faces/</code> &amp; <code>face_data.json</code></p>
-                </div>
-                <div class="w-14 h-14 rounded-2xl bg-indigo-50 text-indigo-600 flex items-center justify-center text-3xl">
-                    👥
+    <!-- Global Floating Toast Notification -->
+    <div id="toast" class="fixed bottom-5 right-5 z-50 max-w-md bg-slate-900 text-white px-4 py-3 rounded-xl shadow-lg border border-slate-800 text-xs sm:text-sm flex items-center gap-2.5 transition-all duration-300 opacity-0 pointer-events-none transform translate-y-3">
+        <span id="toast-icon" class="flex-shrink-0 flex items-center justify-center">
+            <!-- Lucide: Info -->
+            <svg class="w-4 h-4 text-emerald-400" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <circle cx="12" cy="12" r="10"/>
+                <path d="m9 12 2 2 4-4"/>
+            </svg>
+        </span>
+        <span id="toast-message" class="font-medium">ข้อความแจ้งเตือน</span>
+    </div>
+
+    <!-- ========================================== -->
+    <!-- MAIN CONTENT CONTAINER                     -->
+    <!-- ========================================== -->
+    <main class="max-w-7xl mx-auto w-full px-4 sm:px-6 py-6 flex-1 space-y-6">
+
+        <!-- ========================================== -->
+        <!-- TAB 1: ภาพรวมการเข้าเรียน (DASHBOARD)      -->
+        <!-- ========================================== -->
+        <section id="view-dashboard" class="space-y-6">
+
+            <!-- Page Header -->
+            <div class="bg-white border border-slate-200 rounded-2xl p-5 sm:p-6 shadow-sm">
+                <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                    <div>
+                        <h1 class="text-xl sm:text-2xl font-bold text-slate-900 tracking-tight">ภาพรวมการเข้าเรียน</h1>
+                        <p class="text-xs sm:text-sm text-slate-500 mt-1">ระบบตรวจสอบและบันทึกเวลาการเข้าเรียนอัตโนมัติด้วยระบบตรวจจับใบหน้า</p>
+                    </div>
+                    <div class="inline-flex items-center gap-2 px-3 py-1.5 bg-slate-50 border border-slate-200 rounded-xl text-xs sm:text-sm font-medium text-slate-700 self-start sm:self-auto">
+                        <!-- Lucide: Calendar -->
+                        <svg class="w-3.5 h-3.5 text-slate-500" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                            <rect width="18" height="18" x="3" y="4" rx="2" ry="2"/>
+                            <line x1="16" x2="16" y1="2" y2="6"/>
+                            <line x1="8" x2="8" y1="2" y2="6"/>
+                            <line x1="3" x2="21" y1="10" y2="10"/>
+                        </svg>
+                        <span id="header-date">{{ metrics.date }}</span>
+                    </div>
                 </div>
             </div>
 
-            <div class="bg-white rounded-2xl p-5 shadow-sm border border-emerald-200 flex items-center justify-between">
-                <div>
-                    <p class="text-sm font-semibold text-emerald-700">ตรวจพบใบหน้าแล้ววันนี้ (Detected)</p>
-                    <p id="metric-present" class="text-4xl font-extrabold text-emerald-600 mt-1">{{ metrics.present_students }}</p>
-                    <p class="text-xs text-slate-400 mt-1">สแกนตรงกับ Array สำเร็จ</p>
+            <!-- 4 Metric Cards (Single row on desktop, 2x2 on mobile) -->
+            <div class="grid grid-cols-2 lg:grid-cols-4 gap-4 sm:gap-5">
+                
+                <!-- Card 1: นักเรียนทั้งหมด (Total) -->
+                <div class="bg-white rounded-2xl p-5 border border-slate-200 shadow-sm flex flex-col justify-between">
+                    <div class="flex items-center justify-between">
+                        <span class="text-xs sm:text-sm font-medium text-slate-500">นักเรียนทั้งหมด</span>
+                        <div class="w-8 h-8 rounded-lg bg-slate-100 text-slate-600 flex items-center justify-center">
+                            <!-- Lucide: Users -->
+                            <svg class="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                <path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/>
+                                <circle cx="9" cy="7" r="4"/>
+                                <path d="M22 21v-2a4 4 0 0 0-3-3.87"/>
+                                <path d="M16 3.13a4 4 0 0 1 0 7.75"/>
+                            </svg>
+                        </div>
+                    </div>
+                    <div class="mt-3">
+                        <div class="text-2xl sm:text-3xl lg:text-4xl font-extrabold text-slate-900">
+                            <span id="metric-total">{{ metrics.total_students }}</span>
+                            <span class="text-xs sm:text-sm font-normal text-slate-400">คน</span>
+                        </div>
+                        <p class="text-xs text-slate-400 mt-1">ทะเบียนนักเรียนทั้งหมด</p>
+                    </div>
                 </div>
-                <div class="w-14 h-14 rounded-2xl bg-emerald-50 text-emerald-600 flex items-center justify-center text-3xl">
-                    ✅
+
+                <!-- Card 2: มาเรียน (Present) -->
+                <div class="bg-white rounded-2xl p-5 border border-emerald-200/80 shadow-sm flex flex-col justify-between">
+                    <div class="flex items-center justify-between">
+                        <span class="text-xs sm:text-sm font-medium text-emerald-700">มาเรียน</span>
+                        <div class="w-8 h-8 rounded-lg bg-emerald-50 text-emerald-600 flex items-center justify-center">
+                            <!-- Lucide: Check -->
+                            <svg class="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+                                <polyline points="20 6 9 17 4 12"/>
+                            </svg>
+                        </div>
+                    </div>
+                    <div class="mt-3">
+                        <div class="text-2xl sm:text-3xl lg:text-4xl font-extrabold text-emerald-600">
+                            <span id="metric-present">{{ metrics.present_students }}</span>
+                            <span class="text-xs sm:text-sm font-normal text-emerald-500">คน</span>
+                        </div>
+                        <p class="text-xs text-slate-400 mt-1">สแกนใบหน้าสำเร็จวันนี้</p>
+                    </div>
+                </div>
+
+                <!-- Card 3: ขาดเรียน (Missing / Skipping) -->
+                <div class="bg-white rounded-2xl p-5 border border-rose-200/80 shadow-sm flex flex-col justify-between">
+                    <div class="flex items-center justify-between">
+                        <span class="text-xs sm:text-sm font-medium text-rose-700">ขาดเรียน</span>
+                        <div class="w-8 h-8 rounded-lg bg-rose-50 text-rose-600 flex items-center justify-center">
+                            <!-- Lucide: X -->
+                            <svg class="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+                                <line x1="18" y1="6" x2="6" y2="18"/>
+                                <line x1="6" y1="6" x2="18" y2="18"/>
+                            </svg>
+                        </div>
+                    </div>
+                    <div class="mt-3">
+                        <div class="text-2xl sm:text-3xl lg:text-4xl font-extrabold text-rose-600">
+                            <span id="metric-missing">{{ metrics.missing_or_skipping }}</span>
+                            <span class="text-xs sm:text-sm font-normal text-rose-500">คน</span>
+                        </div>
+                        <p class="text-xs text-slate-400 mt-1">ยังไม่พบใบหน้า</p>
+                    </div>
+                </div>
+
+                <!-- Card 4: อัตราการเข้าเรียน (Attendance Rate) -->
+                <div class="bg-white rounded-2xl p-5 border border-slate-200 shadow-sm flex flex-col justify-between">
+                    <div class="flex items-center justify-between">
+                        <span class="text-xs sm:text-sm font-medium text-slate-500">อัตราการเข้าเรียน</span>
+                        <div class="w-8 h-8 rounded-lg bg-indigo-50 text-indigo-600 flex items-center justify-center">
+                            <!-- Lucide: Percent -->
+                            <svg class="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                <line x1="19" x2="5" y1="5" y2="19"/>
+                                <circle cx="6.5" cy="6.5" r="2.5"/>
+                                <circle cx="17.5" cy="17.5" r="2.5"/>
+                            </svg>
+                        </div>
+                    </div>
+                    <div class="mt-3">
+                        <div class="text-2xl sm:text-3xl lg:text-4xl font-extrabold text-slate-900">
+                            <span id="metric-rate">{{ metrics.attendance_rate }}</span><span class="text-lg font-bold text-slate-500">%</span>
+                        </div>
+                        <p class="text-xs text-slate-400 mt-1">คำนวณจากยอดทั้งหมด</p>
+                    </div>
+                </div>
+
+            </div>
+
+            <!-- Middle Section: Donut Chart & Recent Attendance -->
+            <div class="grid grid-cols-1 lg:grid-cols-12 gap-6">
+
+                <!-- Left: SVG Donut Chart (5 cols) -->
+                <div class="lg:col-span-5 bg-white border border-slate-200 rounded-2xl p-5 sm:p-6 shadow-sm flex flex-col justify-between">
+                    <div>
+                        <h2 class="text-base font-bold text-slate-800">สัดส่วนการเข้าเรียนวันนี้</h2>
+                        <p class="text-xs text-slate-500 mt-0.5">เปรียบเทียบนักเรียนที่มาเรียนและขาดเรียน</p>
+                    </div>
+
+                    <!-- Donut Chart Canvas -->
+                    <div class="my-6 flex flex-col items-center justify-center">
+                        <div class="relative w-44 h-44 sm:w-48 sm:h-48 flex items-center justify-center">
+                            <!-- SVG Donut Chart with radius = 60, circumference = 2 * PI * 60 = 376.991 -->
+                            <svg class="w-full h-full transform -rotate-90" viewBox="0 0 160 160">
+                                <!-- Background Track (Slate-200: Neutral gray remainder) -->
+                                <circle
+                                    cx="80" cy="80" r="60"
+                                    fill="transparent"
+                                    stroke="#e2e8f0"
+                                    stroke-width="16"
+                                />
+                                <!-- Missing / Absent Segment (Red: Rose-500) -->
+                                <circle
+                                    id="donut-segment-missing"
+                                    cx="80" cy="80" r="60"
+                                    fill="transparent"
+                                    stroke="#f43f5e"
+                                    stroke-width="16"
+                                    stroke-linecap="round"
+                                    stroke-dasharray="0 377"
+                                    stroke-dashoffset="0"
+                                    class="transition-all duration-500 ease-out"
+                                />
+                                <!-- Present Segment (Green: Emerald-500) -->
+                                <circle
+                                    id="donut-segment-present"
+                                    cx="80" cy="80" r="60"
+                                    fill="transparent"
+                                    stroke="#10b981"
+                                    stroke-width="16"
+                                    stroke-linecap="round"
+                                    stroke-dasharray="0 377"
+                                    stroke-dashoffset="0"
+                                    class="transition-all duration-500 ease-out"
+                                />
+                            </svg>
+                            <!-- Center Content: Matching Card 4 Attendance Rate -->
+                            <div class="absolute inset-0 flex flex-col items-center justify-center text-center pointer-events-none">
+                                <span id="donut-center-pct" class="text-2xl sm:text-3xl font-extrabold text-slate-900">{{ metrics.attendance_rate }}%</span>
+                                <span class="text-[11px] font-medium text-slate-400">อัตรามาเรียน</span>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Chart Legend (Showing ONLY Present & Missing) -->
+                    <div class="pt-4 border-t border-slate-100 grid grid-cols-2 gap-3 text-xs">
+                        <div class="flex items-center gap-2">
+                            <span class="w-3 h-3 rounded-full bg-emerald-500 flex-shrink-0"></span>
+                            <span class="text-slate-600">มาเรียน: <strong id="chart-present-count" class="text-slate-900 font-semibold">{{ metrics.present_students }}</strong> คน</span>
+                        </div>
+                        <div class="flex items-center gap-2">
+                            <span class="w-3 h-3 rounded-full bg-rose-500 flex-shrink-0"></span>
+                            <span class="text-slate-600">ขาดเรียน: <strong id="chart-missing-count" class="text-slate-900 font-semibold">{{ metrics.missing_or_skipping }}</strong> คน</span>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Right: Recent Attendance (7 cols - Text-only, NO Thumbnails) -->
+                <div class="lg:col-span-7 bg-white border border-slate-200 rounded-2xl p-5 sm:p-6 shadow-sm flex flex-col">
+                    <div class="flex items-center justify-between pb-3 border-b border-slate-100">
+                        <div>
+                            <h2 class="text-base font-bold text-slate-800">การเข้าเรียนล่าสุด</h2>
+                            <p class="text-xs text-slate-500 mt-0.5">นักเรียนที่สแกนใบหน้าสำเร็จล่าสุด เรียงตามเวลา</p>
+                        </div>
+                        <span class="text-xs bg-slate-100 text-slate-600 px-2.5 py-1 rounded-lg font-medium">เรียงล่าสุด</span>
+                    </div>
+
+                    <!-- Recent Check-ins List (Text-only, no images) -->
+                    <div id="recent-attendance-list" class="mt-3 space-y-2.5 overflow-y-auto max-h-[300px] flex-1 pr-1">
+                        <!-- Rendered dynamically by JavaScript -->
+                        <div class="text-center py-10 text-slate-400 text-xs sm:text-sm">
+                            กำลังโหลดข้อมูลการเข้าเรียนล่าสุด...
+                        </div>
+                    </div>
+                </div>
+
+            </div>
+
+            <!-- Bottom: System Status Bar (Camera & Last Updated) -->
+            <div class="bg-white border border-slate-200 rounded-xl px-4 py-3 shadow-sm flex flex-wrap items-center justify-between gap-3 text-xs text-slate-600">
+                <div class="flex items-center gap-2 font-medium">
+                    <span id="status-camera-dot" class="w-2.5 h-2.5 rounded-full {{ 'bg-emerald-500' if vision_status.camera_active else 'bg-amber-500' }}"></span>
+                    <span id="status-camera-text">
+                        {{ 'กล้องพร้อมใช้งาน (' + (vision_status.camera_name or 'Webcam USB') + ')' if vision_status.camera_active else 'ไม่พบการเชื่อมต่อกล้อง' }}
+                    </span>
+                </div>
+                <div class="text-slate-500">
+                    <span id="status-last-updated">อัปเดตล่าสุด: --:--:--</span>
                 </div>
             </div>
 
-            <div class="bg-white rounded-2xl p-5 shadow-sm border border-rose-200 flex items-center justify-between">
-                <div>
-                    <p class="text-sm font-semibold text-rose-700">ยังไม่ได้สแกน (Remaining)</p>
-                    <p id="metric-missing" class="text-4xl font-extrabold text-rose-600 mt-1">{{ metrics.missing_or_skipping }}</p>
-                    <p class="text-xs text-slate-400 mt-1">รอตรวจจับใบหน้า</p>
-                </div>
-                <div class="w-14 h-14 rounded-2xl bg-rose-50 text-rose-600 flex items-center justify-center text-3xl">
-                    ⏳
-                </div>
-            </div>
         </section>
 
-        <!-- Camera + Capture Controls -->
-        <section class="grid grid-cols-1 lg:grid-cols-12 gap-6">
-            <!-- Left: Live Camera Stream -->
-            <div class="lg:col-span-6 bg-white rounded-2xl shadow-sm border border-slate-200 p-5 flex flex-col justify-between space-y-4">
-                <div>
-                    <div class="flex items-center justify-between mb-3">
-                        <div class="flex items-center gap-2">
-                            <span class="w-3 h-3 rounded-full {{ 'bg-emerald-500 animate-pulse' if vision_status.camera_active else 'bg-amber-500' }}"></span>
-                            <h2 class="font-bold text-slate-800">ภาพสดจาก <span id="active-camera-name" class="text-indigo-700">{{ vision_status.camera_name or 'Webcam (Index 1)' }}</span></h2>
-                        </div>
-                        <div class="flex items-center gap-2">
-                            <select id="camera-select" onchange="switchCamera(this.value)" class="text-xs border border-slate-300 rounded-lg px-2 py-1 bg-slate-50 font-medium text-slate-700 focus:outline-none focus:ring-2 focus:ring-indigo-500">
-                                <option value="1" {{ 'selected' if vision_status.camera_index == 1 else '' }}>📹 Webcam USB (Index 1)</option>
-                                <option value="0" {{ 'selected' if vision_status.camera_index == 0 else '' }}>💻 กล้องหลัก PC (Index 0)</option>
-                            </select>
-                            <span class="text-xs bg-slate-100 text-slate-600 px-2 py-1 rounded-md font-mono">
-                                Saved: <strong id="known-count">{{ vision_status.known_faces_count }}</strong> คน
-                            </span>
-                        </div>
-                    </div>
 
-                    <div class="rounded-xl overflow-hidden bg-slate-900 border border-slate-800 aspect-video flex items-center justify-center relative">
-                        <img src="/video_feed" alt="camera_pc stream" class="w-full h-full object-contain" />
-                    </div>
-                </div>
+        <!-- ========================================== -->
+        <!-- TAB 2: การเข้าเรียน (ATTENDANCE RECORDS)    -->
+        <!-- ========================================== -->
+        <section id="view-attendance" class="space-y-6 hidden">
 
-                <div class="bg-indigo-50/80 border border-indigo-100 rounded-xl p-3.5 text-xs text-indigo-950 space-y-1">
-                    <p class="font-bold text-indigo-900">💡 ขั้นตอนการทำงาน (Capture ➔ Folder ➔ Array ➔ Real-Time):</p>
-                    <p>1. <strong>Capture:</strong> พิมพ์ชื่อ/รหัสทางขวาแล้วกด <strong>"📸 Capture"</strong> (หรือกดปุ่ม <code>C</code> / <code>1-7</code> ในหน้าต่างกล้อง)</p>
-                    <p>2. <strong>Import in Folder &amp; Process Array:</strong> ระบบเซฟรูปลงโฟลเดอร์ <code>faces/</code> และสกัดค่าใบหน้าในรูปเป็น <strong>Array 128 มิติ</strong> เก็บใน <code>face_data.json</code> ทันทีโดยไม่เด้งหลุด</p>
-                    <p>3. <strong>Real-Time Detection:</strong> ตีกรอบสี่เหลี่ยมและป้ายชื่อเคลื่อนที่ตามใบหน้าแบบเรียลไทม์</p>
-                    <div class="pt-1 border-t border-indigo-200 text-indigo-700">
-                        • ตรวจพบล่าสุด: <strong id="last-detected">{{ vision_status.last_detected_id or 'ยังไม่มี' }}</strong>
-                        (<span id="last-detected-time">{{ vision_status.last_detected_time or '-' }}</span>)
+            <!-- Page Header -->
+            <div class="bg-white border border-slate-200 rounded-2xl p-5 sm:p-6 shadow-sm">
+                <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                    <div>
+                        <h1 class="text-xl sm:text-2xl font-bold text-slate-900 tracking-tight">การเข้าเรียน</h1>
+                        <p class="text-xs sm:text-sm text-slate-500 mt-1">ตรวจสอบ ค้นหา และส่งออกรายงานสถิติการเข้าเรียนประจำวัน</p>
                     </div>
+                    <!-- CSV Export Button -->
+                    <button
+                        onclick="exportAttendanceCSV()"
+                        class="inline-flex items-center justify-center gap-2 bg-slate-900 hover:bg-slate-800 text-white px-4 py-2 rounded-xl text-xs sm:text-sm font-semibold shadow-sm transition">
+                        <!-- Lucide: Download -->
+                        <svg class="w-4 h-4 text-white" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+                            <polyline points="7 10 12 15 17 10"/>
+                            <line x1="12" x2="12" y1="15" y2="3"/>
+                        </svg>
+                        <span>ส่งออกรายงาน CSV</span>
+                    </button>
                 </div>
             </div>
 
-            <!-- Right: Capture & Saved List -->
-            <div class="lg:col-span-6 bg-white rounded-2xl shadow-sm border border-slate-200 p-5 space-y-4 flex flex-col">
-                <div class="flex flex-wrap items-center justify-between gap-2 border-b border-slate-100 pb-3">
-                    <div>
-                        <h2 class="font-bold text-slate-800">Capture รูปใบหน้า ➔ แปลงเป็น Array</h2>
-                        <p class="text-xs text-slate-500">เซฟรูปลงโฟลเดอร์ <code>faces/</code> และแปลงเป็น Array ใน <code>face_data.json</code></p>
-                    </div>
-                    <span id="toast-msg" class="text-xs font-semibold text-indigo-600"></span>
-                </div>
-
-                <!-- Capture Input -->
-                <div class="bg-slate-50 border border-slate-200 rounded-xl p-4 space-y-3">
-                    <label class="block text-xs font-bold text-slate-700">
-                        ➕ พิมพ์ชื่อหรือรหัส (Label / ID) แล้วกด Capture:
-                    </label>
-                    <div class="flex flex-wrap gap-2">
+            <!-- Search & Filter Controls -->
+            <div class="bg-white border border-slate-200 rounded-2xl p-4 sm:p-5 shadow-sm space-y-3">
+                <div class="flex flex-col md:flex-row items-stretch md:items-center justify-between gap-3">
+                    
+                    <!-- Search Input (Search by Name or Student ID) -->
+                    <div class="relative flex-1">
+                        <span class="absolute inset-y-0 left-0 pl-3.5 flex items-center pointer-events-none text-slate-400">
+                            <!-- Lucide: Search -->
+                            <svg class="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                <circle cx="11" cy="11" r="8"/>
+                                <line x1="21" x2="16.65" y1="21" y2="16.65"/>
+                            </svg>
+                        </span>
                         <input
-                            id="new-label-input"
+                            id="attendance-search-input"
                             type="text"
-                            placeholder="พิมพ์ชื่อหรือรหัส เช่น 66001..."
-                            class="flex-1 min-w-[180px] text-sm border border-slate-300 rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-indigo-500"
-                            onkeydown="if(event.key==='Enter') captureNewLabel()"
+                            placeholder="ค้นหาด้วยชื่อ-นามสกุล หรือรหัสนักเรียน..."
+                            oninput="filterAttendanceTable()"
+                            class="w-full pl-10 pr-4 py-2 border border-slate-300 rounded-xl text-xs sm:text-sm text-slate-800 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-slate-900 focus:border-slate-900 bg-slate-50/50"
                         />
+                    </div>
+
+                    <!-- Status Filter Tabs -->
+                    <div class="flex items-center gap-1.5 overflow-x-auto pb-1 md:pb-0 text-xs font-medium">
                         <button
-                            onclick="captureNewLabel()"
-                            class="text-xs bg-indigo-600 hover:bg-indigo-700 text-white px-4 py-2 rounded-lg font-semibold transition shadow-sm">
-                            📸 Capture ➔ Save &amp; Array
+                            id="filter-btn-all"
+                            onclick="setStatusFilter('all')"
+                            class="px-3 py-1.5 rounded-lg border border-slate-300 bg-slate-900 text-white font-semibold transition">
+                            ทั้งหมด (<span id="count-filter-all">0</span>)
+                        </button>
+                        <button
+                            id="filter-btn-present"
+                            onclick="setStatusFilter('present')"
+                            class="px-3 py-1.5 rounded-lg border border-slate-200 bg-white text-slate-600 hover:bg-slate-50 transition">
+                            มาเรียน (<span id="count-filter-present">0</span>)
+                        </button>
+                        <button
+                            id="filter-btn-missing"
+                            onclick="setStatusFilter('missing')"
+                            class="px-3 py-1.5 rounded-lg border border-slate-200 bg-white text-slate-600 hover:bg-slate-50 transition">
+                            ขาดเรียน (<span id="count-filter-missing">0</span>)
+                        </button>
+                        <button
+                            id="filter-btn-excused"
+                            onclick="setStatusFilter('excused')"
+                            class="px-3 py-1.5 rounded-lg border border-slate-200 bg-white text-slate-600 hover:bg-slate-50 transition">
+                            ลา (<span id="count-filter-excused">0</span>)
                         </button>
                     </div>
-                </div>
 
-                <!-- Dynamic List -->
-                <div id="roster-container" class="space-y-3 flex-1 overflow-y-auto max-h-[420px] pr-1">
                 </div>
             </div>
+
+            <!-- Unified Responsive Attendance Records: Desktop Table (>= 768px) vs Mobile Cards (< 768px) -->
+
+            <!-- Desktop Table View (>= 768px: md:block) -->
+            <div class="hidden md:block bg-white border border-slate-200 rounded-2xl shadow-sm overflow-hidden">
+                <table class="w-full text-left border-collapse">
+                    <thead>
+                        <tr class="bg-slate-50 border-b border-slate-200 text-xs font-semibold text-slate-500 uppercase tracking-wider">
+                            <th class="py-3 px-4">รหัสนักเรียน</th>
+                            <th class="py-3 px-4">ชื่อ-นามสกุล</th>
+                            <th class="py-3 px-4">ห้องเรียน</th>
+                            <th class="py-3 px-4">เวลาที่บันทึก</th>
+                            <th class="py-3 px-4 text-right">สถานะการเข้าเรียน</th>
+                        </tr>
+                    </thead>
+                    <tbody id="attendance-desktop-tbody" class="divide-y divide-slate-100 text-xs sm:text-sm">
+                        <!-- Populated by JavaScript -->
+                    </tbody>
+                </table>
+            </div>
+
+            <!-- Mobile Student Card List (< 768px: block md:hidden) -->
+            <div id="attendance-mobile-cards" class="block md:hidden space-y-3">
+                <!-- Populated by JavaScript -->
+            </div>
+
+            <!-- Empty Search Results State -->
+            <div id="attendance-empty-state" class="hidden bg-white border border-dashed border-slate-300 rounded-2xl p-10 text-center space-y-2">
+                <!-- Lucide: Search -->
+                <svg class="w-10 h-10 text-slate-300 mx-auto" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+                    <circle cx="11" cy="11" r="8"/>
+                    <line x1="21" x2="16.65" y1="21" y2="16.65"/>
+                </svg>
+                <p class="text-sm font-semibold text-slate-700">ไม่พบข้อมูลที่ตรงกับเงื่อนไขการค้นหา</p>
+                <p class="text-xs text-slate-400">ลองเปลี่ยนคำค้นหาหรือเลือกสถานะทั้งหมด</p>
+            </div>
+
         </section>
+
+
+        <!-- ========================================== -->
+        <!-- TAB 3: กล้องและลงทะเบียน (FACE & CAMERA)   -->
+        <!-- ========================================== -->
+        <section id="view-camera" class="space-y-6 hidden">
+
+            <!-- Page Header -->
+            <div class="bg-white border border-slate-200 rounded-2xl p-5 sm:p-6 shadow-sm">
+                <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                    <div>
+                        <h1 class="text-xl sm:text-2xl font-bold text-slate-900 tracking-tight">กล้องและการลงทะเบียน</h1>
+                        <p class="text-xs sm:text-sm text-slate-500 mt-1">ภาพสดจากกล้องตรวจจับ การสลับอุปกรณ์ และการจัดการข้อมูลใบหน้า</p>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Two-Column Layout: Left = Live Video Feed, Right = Register & Faces List -->
+            <div class="grid grid-cols-1 lg:grid-cols-12 gap-6">
+
+                <!-- Left Column: Camera Feed (6 cols) -->
+                <div class="lg:col-span-6 bg-white border border-slate-200 rounded-2xl p-5 shadow-sm space-y-4 flex flex-col justify-between">
+                    <div>
+                        <!-- Camera Header & Device Switcher -->
+                        <div class="flex items-center justify-between gap-3 mb-3">
+                            <div class="flex items-center gap-2">
+                                <span class="w-2.5 h-2.5 rounded-full {{ 'bg-emerald-500 animate-pulse' if vision_status.camera_active else 'bg-amber-500' }}"></span>
+                                <h2 class="text-sm font-bold text-slate-800">
+                                    <span id="active-camera-label">{{ vision_status.camera_name or 'Webcam USB' }}</span>
+                                </h2>
+                            </div>
+                            <!-- Camera Select Dropdown -->
+                            <select
+                                id="camera-select"
+                                onchange="switchCamera(this.value)"
+                                class="text-xs border border-slate-300 rounded-lg px-2.5 py-1.5 bg-slate-50 font-medium text-slate-700 focus:outline-none focus:ring-2 focus:ring-slate-900">
+                                <option value="1" {{ 'selected' if vision_status.camera_index == 1 else '' }}>Webcam USB (Index 1)</option>
+                                <option value="0" {{ 'selected' if vision_status.camera_index == 0 else '' }}>กล้องหลัก PC (Index 0)</option>
+                            </select>
+                        </div>
+
+                        <!-- Video Stream Window -->
+                        <div class="rounded-xl overflow-hidden bg-slate-900 border border-slate-800 aspect-video flex items-center justify-center relative shadow-inner">
+                            <img src="/video_feed" alt="Live Camera Feed" class="w-full h-full object-contain" />
+                        </div>
+                    </div>
+
+                    <!-- Detection Status Card -->
+                    <div class="bg-slate-50 border border-slate-200 rounded-xl p-3.5 text-xs text-slate-600 space-y-1.5">
+                        <div class="flex items-center justify-between">
+                            <span class="font-medium text-slate-700">ตรวจพบล่าสุด:</span>
+                            <span class="font-bold text-slate-900" id="camera-last-detected">{{ vision_status.last_detected_id or 'ยังไม่มี' }}</span>
+                        </div>
+                        <div class="flex items-center justify-between text-slate-500">
+                            <span>เวลาที่บันทึก:</span>
+                            <span id="camera-last-detected-time">{{ vision_status.last_detected_time or '-' }}</span>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Right Column: Registration & Registered Faces List (6 cols) -->
+                <div class="lg:col-span-6 bg-white border border-slate-200 rounded-2xl p-5 shadow-sm space-y-4 flex flex-col">
+                    <div>
+                        <h2 class="text-sm font-bold text-slate-800">ลงทะเบียนและจัดการใบหน้า</h2>
+                        <p class="text-xs text-slate-500 mt-0.5">ถ่ายภาพใบหน้าเข้าสู่ระบบ หรืออัปโหลดรูปภาพเพื่อเพิ่มตัวอย่าง</p>
+                    </div>
+
+                    <!-- Input Form: Capture New Face -->
+                    <div class="bg-slate-50 border border-slate-200 rounded-xl p-3.5 space-y-2">
+                        <label class="block text-xs font-semibold text-slate-700">
+                            พิมพ์ชื่อหรือรหัสนักเรียน เพื่อลงทะเบียน:
+                        </label>
+                        <div class="flex gap-2">
+                            <input
+                                id="new-student-input"
+                                type="text"
+                                placeholder="เช่น 09627 หรือ สมชาย..."
+                                onkeydown="if(event.key==='Enter') captureNewFace()"
+                                class="flex-1 text-xs sm:text-sm border border-slate-300 rounded-lg px-3 py-2 bg-white focus:outline-none focus:ring-2 focus:ring-slate-900"
+                            />
+                            <button
+                                onclick="captureNewFace()"
+                                class="inline-flex items-center gap-1.5 bg-slate-900 hover:bg-slate-800 text-white text-xs px-3.5 py-2 rounded-lg font-semibold transition shadow-sm whitespace-nowrap">
+                                <!-- Lucide: Camera -->
+                                <svg class="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                    <path d="M14.5 4h-5L7 7H4a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2h-3l-2.5-3z"/>
+                                    <circle cx="12" cy="13" r="3"/>
+                                </svg>
+                                <span>ถ่ายภาพ</span>
+                            </button>
+                        </div>
+                    </div>
+
+                    <!-- Registered Faces List -->
+                    <div class="flex-1 flex flex-col space-y-2 min-h-[220px]">
+                        <div class="flex items-center justify-between text-xs text-slate-500 px-1">
+                            <span>รายชื่อที่ลงทะเบียนแล้ว (<span id="registered-faces-count">{{ vision_status.known_faces_count or 0 }}</span> คน)</span>
+                        </div>
+                        <div id="registered-faces-container" class="space-y-2.5 overflow-y-auto max-h-[340px] pr-1 flex-1">
+                            <!-- Populated by JavaScript -->
+                        </div>
+                    </div>
+                </div>
+
+            </div>
+
+            <!-- Bottom: Maintenance Actions Bar -->
+            <div class="bg-white border border-slate-200 rounded-2xl p-5 shadow-sm flex flex-col sm:flex-row items-center justify-between gap-4">
+                <div>
+                    <h3 class="text-sm font-bold text-slate-800">เครื่องมือดูแลระบบ (Maintenance)</h3>
+                    <p class="text-xs text-slate-500">ซิงค์ไฟล์ข้อมูล หรือรีเซ็ตผลการเช็คชื่อประจำวัน</p>
+                </div>
+                <div class="flex flex-wrap items-center gap-2.5 w-full sm:w-auto">
+                    <button
+                        onclick="syncFolderNow()"
+                        class="inline-flex items-center justify-center gap-2 flex-1 sm:flex-initial text-xs bg-slate-100 hover:bg-slate-200 text-slate-700 border border-slate-300 px-3.5 py-2 rounded-xl font-medium transition">
+                        <!-- Lucide: RefreshCw / FolderSync -->
+                        <svg class="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                            <path d="M21 12a9 9 0 0 0-9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/>
+                            <path d="M3 3v5h5"/>
+                            <path d="M3 12a9 9 0 0 0 9 9 9.75 9.75 0 0 0 6.74-2.74L21 16"/>
+                            <path d="M16 16h5v5"/>
+                        </svg>
+                        <span>ซิงค์รูปภาพจากโฟลเดอร์</span>
+                    </button>
+                    <button
+                        onclick="confirmResetAttendance()"
+                        class="inline-flex items-center justify-center gap-2 flex-1 sm:flex-initial text-xs bg-rose-50 hover:bg-rose-100 text-rose-700 border border-rose-200 px-3.5 py-2 rounded-xl font-medium transition">
+                        <!-- Lucide: RotateCcw -->
+                        <svg class="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                            <path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/>
+                            <path d="M3 3v5h5"/>
+                        </svg>
+                        <span>รีเซ็ตผลเช็คชื่อวันนี้</span>
+                    </button>
+                </div>
+            </div>
+
+        </section>
+
     </main>
 
-    <script>
-        let picCacheBuster = Date.now();
+    <!-- Footer -->
+    <footer class="bg-white border-t border-slate-200 py-4 text-center text-xs text-slate-400">
+        <p>Project Face — ระบบเช็คชื่ออัตโนมัติด้วยระบบตรวจจับใบหน้า</p>
+    </footer>
 
-        function showToast(msg, isError = false) {
-            const el = document.getElementById('toast-msg');
-            el.className = isError ? 'text-xs font-semibold text-rose-600' : 'text-xs font-semibold text-emerald-600';
-            el.textContent = msg;
+    <!-- ========================================== -->
+    <!-- JAVASCRIPT LOGIC & STATE MANAGEMENT        -->
+    <!-- ========================================== -->
+    <script>
+        // Global State
+        let currentTab = 'dashboard';
+        let currentStatusFilter = 'all';
+        let picCacheBuster = Date.now();
+        let lastSuccessfulPollTimestamp = 0;
+        let cachedRoster = [];
+        let cachedVision = {};
+        let cachedMetrics = {};
+
+        // Circumference for SVG Donut Chart (radius = 60)
+        const DONUT_CIRCUMFERENCE = 2 * Math.PI * 60; // 376.9911
+
+        // Lucide SVG Icons Dictionary
+        const SVG_ICONS = {
+            check: '<svg class="w-3 h-3 inline-block mr-1 text-emerald-600" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>',
+            x: '<svg class="w-3 h-3 inline-block mr-1 text-rose-600" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>',
+            clock: '<svg class="w-3 h-3 inline-block mr-1 text-slate-400" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>',
+            camera: '<svg class="w-3.5 h-3.5 inline-block mr-1" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14.5 4h-5L7 7H4a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2h-3l-2.5-3z"/><circle cx="12" cy="13" r="3"/></svg>',
+            upload: '<svg class="w-3.5 h-3.5 text-slate-600" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" x2="12" y1="3" y2="15"/></svg>',
+            trash: '<svg class="w-3.5 h-3.5 text-rose-600" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"/><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/><line x1="10" x2="10" y1="11" y2="17"/><line x1="14" x2="14" y1="11" y2="17"/></svg>',
+            toastSuccess: '<svg class="w-4 h-4 text-emerald-400" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="m9 12 2 2 4-4"/></svg>',
+            toastError: '<svg class="w-4 h-4 text-rose-400" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" x2="12" y1="8" y2="12"/><line x1="12" x2="12.01" y1="16" y2="16"/></svg>'
+        };
+
+        // Initialize Tab from URL Hash
+        function initTabFromHash() {
+            const hash = window.location.hash.replace('#', '').toLowerCase();
+            if (['dashboard', 'attendance', 'camera'].includes(hash)) {
+                switchTab(hash);
+            } else {
+                switchTab('dashboard');
+            }
         }
 
-        async function captureNewLabel() {
-            const input = document.getElementById('new-label-input');
-            const label = (input.value || '').trim();
-            if (!label) {
-                showToast('กรุณาพิมพ์ชื่อหรือรหัสก่อนกด Capture', true);
-                input.focus();
+        // Switch Navigation Tabs
+        function switchTab(tabId) {
+            currentTab = tabId;
+            window.location.hash = tabId;
+
+            const tabs = ['dashboard', 'attendance', 'camera'];
+            tabs.forEach(t => {
+                const viewEl = document.getElementById(`view-${t}`);
+                const btnEl = document.getElementById(`tab-btn-${t}`);
+                if (t === tabId) {
+                    if (viewEl) viewEl.classList.remove('hidden');
+                    if (btnEl) {
+                        btnEl.className = 'px-3 sm:px-4 py-1.5 rounded-lg transition-all text-slate-900 bg-white shadow-sm font-semibold';
+                    }
+                } else {
+                    if (viewEl) viewEl.classList.add('hidden');
+                    if (btnEl) {
+                        btnEl.className = 'px-3 sm:px-4 py-1.5 rounded-lg transition-all text-slate-600 hover:text-slate-900';
+                    }
+                }
+            });
+        }
+
+        // Toast Notification System (Using Lucide SVG Icons)
+        let toastTimeout = null;
+        function showToast(message, isError = false) {
+            const toast = document.getElementById('toast');
+            const toastMsg = document.getElementById('toast-message');
+            const toastIcon = document.getElementById('toast-icon');
+            if (!toast || !toastMsg || !toastIcon) return;
+
+            toastMsg.textContent = message;
+            toastIcon.innerHTML = isError ? SVG_ICONS.toastError : SVG_ICONS.toastSuccess;
+            toast.className = `fixed bottom-5 right-5 z-50 max-w-md ${isError ? 'bg-rose-900 border-rose-800' : 'bg-slate-900 border-slate-800'} text-white px-4 py-3 rounded-xl shadow-lg border text-xs sm:text-sm flex items-center gap-2.5 transition-all duration-300 opacity-100 pointer-events-auto transform translate-y-0`;
+
+            if (toastTimeout) clearTimeout(toastTimeout);
+            toastTimeout = setTimeout(() => {
+                toast.className = toast.className.replace('opacity-100 translate-y-0', 'opacity-0 translate-y-3 pointer-events-none');
+            }, 3500);
+        }
+
+        // Dynamic Live Indicator Status
+        function updateLiveIndicator(isOnline) {
+            const dot = document.getElementById('nav-live-dot');
+            const text = document.getElementById('nav-live-text');
+            const wrapper = document.getElementById('nav-live-wrapper');
+            if (!dot || !text) return;
+
+            if (isOnline) {
+                dot.className = 'w-2 h-2 rounded-full bg-emerald-500 animate-pulse';
+                text.className = 'text-emerald-700 font-semibold';
+                text.textContent = 'สด (Live)';
+                if (wrapper) wrapper.className = 'flex items-center gap-1.5 px-2 py-0.5 rounded-full border border-emerald-200 bg-emerald-50 text-xs font-medium';
+            } else {
+                dot.className = 'w-2 h-2 rounded-full bg-rose-500';
+                text.className = 'text-rose-700 font-semibold';
+                text.textContent = 'ขาดการเชื่อมต่อ';
+                if (wrapper) wrapper.className = 'flex items-center gap-1.5 px-2 py-0.5 rounded-full border border-rose-200 bg-rose-50 text-xs font-medium';
+            }
+        }
+
+        // Thai Date Formatter
+        function formatThaiDate(isoDateStr) {
+            if (!isoDateStr) return '';
+            try {
+                const parts = isoDateStr.split('-');
+                if (parts.length === 3) {
+                    const year = parseInt(parts[0], 10) + 543;
+                    const monthNames = [
+                        'มกราคม', 'กุมภาพันธ์', 'มีนาคม', 'เมษายน', 'พฤษภาคม', 'มิถุนายน',
+                        'กรกฎาคม', 'สิงหาคม', 'กันยายน', 'ตุลาคม', 'พฤศจิกายน', 'ธันวาคม'
+                    ];
+                    const month = monthNames[parseInt(parts[1], 10) - 1] || parts[1];
+                    const day = parseInt(parts[2], 10);
+                    return `วันที่ ${day} ${month} พ.ศ. ${year}`;
+                }
+                return isoDateStr;
+            } catch (err) {
+                return isoDateStr;
+            }
+        }
+
+        // Update SVG Donut Chart (Based strictly on total_students, zero-division protected)
+        function updateDonutChart(total, present, missing, rate) {
+            const centerPctEl = document.getElementById('donut-center-pct');
+            const segPresentEl = document.getElementById('donut-segment-present');
+            const segMissingEl = document.getElementById('donut-segment-missing');
+
+            if (!centerPctEl || !segPresentEl || !segMissingEl) return;
+
+            if (total <= 0) {
+                // Zero-division protection: Empty neutral ring
+                centerPctEl.textContent = '0.0%';
+                segPresentEl.setAttribute('stroke-dasharray', `0 ${DONUT_CIRCUMFERENCE}`);
+                segMissingEl.setAttribute('stroke-dasharray', `0 ${DONUT_CIRCUMFERENCE}`);
                 return;
             }
-            await captureFace(label);
+
+            // Calculations based strictly on total_students as 100%
+            const presentLength = (present / total) * DONUT_CIRCUMFERENCE;
+            const missingLength = (missing / total) * DONUT_CIRCUMFERENCE;
+
+            // Green segment starts at 0 offset (top of circle)
+            segPresentEl.setAttribute('stroke-dasharray', `${presentLength} ${DONUT_CIRCUMFERENCE}`);
+            segPresentEl.setAttribute('stroke-dashoffset', '0');
+
+            // Red segment starts right after green segment
+            segMissingEl.setAttribute('stroke-dasharray', `${missingLength} ${DONUT_CIRCUMFERENCE}`);
+            segMissingEl.setAttribute('stroke-dashoffset', `-${presentLength}`);
+
+            // Center text matching Metric Card 4 exactly
+            centerPctEl.textContent = `${Number(rate).toFixed(1)}%`;
         }
 
-        async function captureFace(studentId) {
-            showToast(`กำลัง Capture "${studentId}" ลงโฟลเดอร์ faces/ และแปลงเป็น Array...`);
-            const res = await fetch(`/api/register-face/${encodeURIComponent(studentId)}`, { method: 'POST' });
-            const data = await res.json();
-            if (res.ok && data.success) {
-                picCacheBuster = Date.now();
-                showToast(`Capture "${studentId}" สำเร็จ! บันทึกรูปใน faces/ และแปลงเป็น Array แล้ว`);
-                await pollDashboard();
-            } else {
-                showToast(data.message || 'ไม่พบใบหน้าในกล้อง กรุหันหน้ามองกล้อง', true);
-            }
-        }
+        // Render Recent Attendance List (Text-only, NO Thumbnails)
+        function renderRecentAttendance(roster) {
+            const listEl = document.getElementById('recent-attendance-list');
+            if (!listEl) return;
 
-        async function uploadPhoto(studentId, inputEl) {
-            if (!inputEl.files || !inputEl.files[0]) return;
-            const formData = new FormData();
-            formData.append('file', inputEl.files[0]);
+            // Filter present students with valid checkin_time
+            const presentStudents = (roster || []).filter(s => s.checkin_time && s.checkin_time !== '-');
+            // Sort by checkin_time descending (newest first)
+            presentStudents.sort((a, b) => (b.checkin_time || '').localeCompare(a.checkin_time || ''));
 
-            showToast(`กำลังบันทึกรูปลง faces/${studentId}/ และแปลงเป็น Array...`);
-            const res = await fetch(`/api/upload-face/${encodeURIComponent(studentId)}`, {
-                method: 'POST',
-                body: formData
-            });
-            const data = await res.json();
-            if (res.ok && data.success) {
-                picCacheBuster = Date.now();
-                showToast('อัปโหลดรูปและแปลงเป็น Array สำเร็จ!');
-                await pollDashboard();
-            } else {
-                showToast(data.message || 'ไม่พบใบหน้าในรูปภาพ', true);
-            }
-        }
-
-        async function deletePerson(studentId) {
-            const res = await fetch(`/api/face-data/${encodeURIComponent(studentId)}`, { method: 'DELETE' });
-            const data = await res.json();
-            if (res.ok && data.success) {
-                showToast(`ลบข้อมูลของ "${studentId}" เรียบร้อยแล้ว`);
-                await pollDashboard();
-            }
-        }
-
-        async function switchCamera(camIndex) {
-            showToast(`กำลังสลับไปยังกล้อง Index ${camIndex}...`);
-            const res = await fetch(`/api/switch-camera/${camIndex}`, { method: 'POST' });
-            const data = await res.json();
-            if (res.ok && data.success) {
-                showToast(`สลับกล้องเป็น ${data.camera_name} สำเร็จ!`);
-                const nameEl = document.getElementById('active-camera-name');
-                if (nameEl) nameEl.textContent = data.camera_name;
-            } else {
-                showToast(`ไม่สามารถเปิดกล้อง Index ${camIndex} ได้`, true);
-            }
-        }
-
-        async function syncFolderNow() {
-            showToast('กำลัง Import รูปจากโฟลเดอร์ faces/ มาแปลงเป็น Array...');
-            const res = await fetch('/api/sync-now', { method: 'POST' });
-            if (res.ok) {
-                picCacheBuster = Date.now();
-                showToast('Import รูปในโฟลเดอร์ faces/ เป็น Array เรียบร้อยแล้ว!');
-                await pollDashboard();
-            }
-        }
-
-        async function resetTest() {
-            const res = await fetch('/api/reset-test', { method: 'POST' });
-            if (res.ok) {
-                showToast('รีเซ็ตผลการเช็คชื่อเรียบร้อยแล้ว');
-                await pollDashboard();
-            }
-        }
-
-        function renderRoster(roster, vision) {
-            const container = document.getElementById('roster-container');
-            if (!roster || roster.length === 0) {
-                container.innerHTML = `
-                    <div class="bg-slate-50 border border-dashed border-slate-300 rounded-xl p-6 text-center space-y-2 text-slate-500">
-                        <div class="text-2xl">📷</div>
-                        <p class="text-sm font-semibold text-slate-700">ยังไม่มีข้อมูลที่ Capture</p>
-                        <p class="text-xs">พิมพ์ชื่อ/รหัสในช่องด้านบนแล้วกด <strong>"📸 Capture"</strong> หรือวางรูปในโฟลเดอร์ <code>faces/</code></p>
+            if (presentStudents.length === 0) {
+                listEl.innerHTML = `
+                    <div class="text-center py-10 text-slate-400 text-xs sm:text-sm space-y-2">
+                        <svg class="w-8 h-8 text-slate-300 mx-auto" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+                            <circle cx="12" cy="12" r="10"/>
+                            <polyline points="12 6 12 12 16 14"/>
+                        </svg>
+                        <p class="font-medium text-slate-600">ยังไม่มีข้อมูลการเข้าเรียนในวันนี้</p>
+                        <p class="text-[11px] text-slate-400">ระบบจะบันทึกรายชื่อที่ตรวจจับได้โดยอัตโนมัติ</p>
                     </div>
                 `;
                 return;
             }
 
+            // Display top 8 recent check-ins
+            const topRecent = presentStudents.slice(0, 8);
+            listEl.innerHTML = topRecent.map(student => `
+                <div class="flex items-center justify-between p-2.5 rounded-xl border border-slate-100 bg-slate-50/60 hover:bg-slate-50 transition gap-3">
+                    <div class="min-w-0 flex-1 flex items-center gap-2.5">
+                        <span class="font-mono text-xs font-bold text-slate-700 bg-white border border-slate-200 px-2 py-0.5 rounded shadow-xs">
+                            ${student.student_id}
+                        </span>
+                        <div class="truncate">
+                            <span class="text-xs sm:text-sm font-semibold text-slate-800 truncate block">
+                                ${student.full_name || student.student_id}
+                            </span>
+                            <span class="text-[11px] text-slate-400 flex items-center gap-1 sm:hidden">
+                                ${SVG_ICONS.clock} ${student.checkin_time}
+                            </span>
+                        </div>
+                    </div>
+                    <div class="flex items-center gap-2 flex-shrink-0">
+                        <span class="hidden sm:inline-flex items-center text-xs font-mono text-slate-500">
+                            ${SVG_ICONS.clock} ${student.checkin_time}
+                        </span>
+                        <span class="inline-flex items-center text-[11px] font-semibold px-2.5 py-0.5 rounded-full bg-emerald-50 text-emerald-700 border border-emerald-200">
+                            ${SVG_ICONS.check} มาเรียน
+                        </span>
+                    </div>
+                </div>
+            `).join('');
+        }
+
+        // Set Status Filter for Attendance Page
+        function setStatusFilter(filterKey) {
+            currentStatusFilter = filterKey;
+            const keys = ['all', 'present', 'missing', 'excused'];
+            keys.forEach(k => {
+                const btn = document.getElementById(`filter-btn-${k}`);
+                if (!btn) return;
+                if (k === filterKey) {
+                    btn.className = 'px-3 py-1.5 rounded-lg border border-slate-300 bg-slate-900 text-white font-semibold transition';
+                } else {
+                    btn.className = 'px-3 py-1.5 rounded-lg border border-slate-200 bg-white text-slate-600 hover:bg-slate-50 transition';
+                }
+            });
+            filterAttendanceTable();
+        }
+
+        // Filter and Render Attendance Table (Desktop Table & Mobile Cards)
+        function filterAttendanceTable() {
+            const searchInput = document.getElementById('attendance-search-input');
+            const query = (searchInput ? searchInput.value : '').trim().toLowerCase();
+
+            let filtered = cachedRoster.slice();
+
+            // Status Filtering
+            if (currentStatusFilter === 'present') {
+                filtered = filtered.filter(s => s.status_code === 'present');
+            } else if (currentStatusFilter === 'missing') {
+                filtered = filtered.filter(s => s.status_code === 'missing');
+            } else if (currentStatusFilter === 'excused') {
+                filtered = filtered.filter(s => s.status_code === 'excused');
+            }
+
+            // Search Query Filtering
+            if (query) {
+                filtered = filtered.filter(s => {
+                    const sid = (s.student_id || '').toLowerCase();
+                    const name = (s.full_name || '').toLowerCase();
+                    const classroom = (s.classroom || '').toLowerCase();
+                    return sid.includes(query) || name.includes(query) || classroom.includes(query);
+                });
+            }
+
+            const desktopTbody = document.getElementById('attendance-desktop-tbody');
+            const mobileCardsContainer = document.getElementById('attendance-mobile-cards');
+            const emptyState = document.getElementById('attendance-empty-state');
+
+            if (filtered.length === 0) {
+                if (desktopTbody) desktopTbody.innerHTML = '';
+                if (mobileCardsContainer) mobileCardsContainer.innerHTML = '';
+                if (emptyState) emptyState.classList.remove('hidden');
+                return;
+            }
+
+            if (emptyState) emptyState.classList.add('hidden');
+
+            // Render Desktop Table (>= 768px)
+            if (desktopTbody) {
+                desktopTbody.innerHTML = filtered.map(student => {
+                    let badgeClass = 'bg-slate-50 text-slate-700 border-slate-200';
+                    let statusLabel = student.attendance_status || 'รอสแกน';
+
+                    if (student.status_code === 'present') {
+                        badgeClass = 'bg-emerald-50 text-emerald-700 border-emerald-200';
+                        statusLabel = `${SVG_ICONS.check} มาเรียน`;
+                    } else if (student.status_code === 'missing') {
+                        badgeClass = 'bg-rose-50 text-rose-700 border-rose-200';
+                        statusLabel = `${SVG_ICONS.x} ขาดเรียน`;
+                    } else if (student.status_code === 'excused') {
+                        badgeClass = 'bg-amber-50 text-amber-700 border-amber-200';
+                        statusLabel = `ลา (${student.leave_status || 'มีใบลา'})`;
+                    }
+
+                    return `
+                        <tr class="hover:bg-slate-50/70 transition">
+                            <td class="py-3 px-4 font-mono font-bold text-slate-800">${student.student_id}</td>
+                            <td class="py-3 px-4 font-medium text-slate-800">${student.full_name || student.student_id}</td>
+                            <td class="py-3 px-4 text-slate-500">${student.classroom || '-'}</td>
+                            <td class="py-3 px-4 font-mono text-slate-600">${student.checkin_time || '-'}</td>
+                            <td class="py-3 px-4 text-right">
+                                <span class="inline-flex items-center text-xs font-semibold px-2.5 py-0.5 rounded-full border ${badgeClass}">
+                                    ${statusLabel}
+                                </span>
+                            </td>
+                        </tr>
+                    `;
+                }).join('');
+            }
+
+            // Render Mobile Cards (< 768px: block md:hidden)
+            if (mobileCardsContainer) {
+                mobileCardsContainer.innerHTML = filtered.map(student => {
+                    let badgeClass = 'bg-slate-50 text-slate-700 border-slate-200';
+                    let statusLabel = student.attendance_status || 'รอสแกน';
+
+                    if (student.status_code === 'present') {
+                        badgeClass = 'bg-emerald-50 text-emerald-700 border-emerald-200';
+                        statusLabel = `${SVG_ICONS.check} มาเรียน`;
+                    } else if (student.status_code === 'missing') {
+                        badgeClass = 'bg-rose-50 text-rose-700 border-rose-200';
+                        statusLabel = `${SVG_ICONS.x} ขาดเรียน`;
+                    } else if (student.status_code === 'excused') {
+                        badgeClass = 'bg-amber-50 text-amber-700 border-amber-200';
+                        statusLabel = `ลา (${student.leave_status || 'มีใบลา'})`;
+                    }
+
+                    return `
+                        <div class="bg-white border border-slate-200 rounded-xl p-3.5 shadow-xs space-y-2.5">
+                            <div class="flex items-start justify-between gap-2">
+                                <div>
+                                    <span class="font-mono text-xs font-bold text-slate-600 bg-slate-100 px-2 py-0.5 rounded border border-slate-200">
+                                        ${student.student_id}
+                                    </span>
+                                    <h3 class="text-sm font-bold text-slate-900 mt-1">
+                                        ${student.full_name || student.student_id}
+                                    </h3>
+                                </div>
+                                <span class="inline-flex items-center text-xs font-semibold px-2.5 py-0.5 rounded-full border ${badgeClass}">
+                                    ${statusLabel}
+                                </span>
+                            </div>
+                            <div class="flex items-center justify-between text-xs text-slate-500 pt-2 border-t border-slate-100">
+                                <span>ห้อง: ${student.classroom || '-'}</span>
+                                <span class="font-mono">เวลา: ${student.checkin_time || '-'}</span>
+                            </div>
+                        </div>
+                    `;
+                }).join('');
+            }
+        }
+
+        // Export Attendance Records to CSV (UTF-8 with BOM)
+        function exportAttendanceCSV() {
+            if (!cachedRoster || cachedRoster.length === 0) {
+                showToast('ไม่มีข้อมูลการเข้าเรียนสำหรับส่งออก', true);
+                return;
+            }
+
+            const currentDate = (cachedMetrics && cachedMetrics.date) || new Date().toISOString().split('T')[0];
+            
+            // CSV Header
+            const headers = ['รหัสนักเรียน', 'ชื่อ-นามสกุล', 'ห้องเรียน', 'เวลาเช็คชื่อ', 'สถานะการเข้าเรียน'];
+            const rows = [headers];
+
+            cachedRoster.forEach(s => {
+                let status = 'รอสแกน';
+                if (s.status_code === 'present') status = 'มาเรียน';
+                else if (s.status_code === 'missing') status = 'ขาดเรียน';
+                else if (s.status_code === 'excused') status = `ลา (${s.leave_status || ''})`;
+
+                rows.push([
+                    `"${(s.student_id || '').replace(/"/g, '""')}"`,
+                    `"${(s.full_name || '').replace(/"/g, '""')}"`,
+                    `"${(s.classroom || '').replace(/"/g, '""')}"`,
+                    `"${(s.checkin_time || '-').replace(/"/g, '""')}"`,
+                    `"${status.replace(/"/g, '""')}"`
+                ]);
+            });
+
+            const csvString = rows.map(r => r.join(',')).join('\r\n');
+            // Prepend \uFEFF BOM for UTF-8 compatibility in Excel on Windows
+            const blob = new Blob(['\uFEFF' + csvString], { type: 'text/csv;charset=utf-8;' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = `attendance_report_${currentDate}.csv`;
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            URL.revokeObjectURL(url);
+
+            showToast('ส่งออกรายงาน CSV สำเร็จ!');
+        }
+
+        // Render Registered Faces List in Camera View
+        function renderRegisteredFaces(vision) {
+            const container = document.getElementById('registered-faces-container');
+            const countEl = document.getElementById('registered-faces-count');
+            if (!container) return;
+
             const previews = (vision && vision.array_previews) || {};
-            container.innerHTML = roster.map(student => {
-                const sid = student.student_id;
+            const registeredIds = Object.keys(previews);
+
+            if (countEl) countEl.textContent = registeredIds.length;
+
+            if (registeredIds.length === 0) {
+                container.innerHTML = `
+                    <div class="text-center py-8 text-slate-400 text-xs border border-dashed border-slate-200 rounded-xl">
+                        ยังไม่มีข้อมูลใบหน้าที่ลงทะเบียน
+                    </div>
+                `;
+                return;
+            }
+
+            container.innerHTML = registeredIds.map(sid => {
                 const safeSid = sid.replace(/'/g, "\\'");
-                const isPresent = student.status_code === 'present';
-                const arrInfo = previews[sid];
-                const samplesCount = arrInfo ? arrInfo.samples : 0;
-                const picsCount = arrInfo ? arrInfo.saved_pics : 0;
-                const arrText = arrInfo
-                    ? `📂 faces/${sid} (${picsCount} รูป) ➔ 🔢 Array[128] (${samplesCount} samples): ${arrInfo.preview}`
-                    : 'ยังไม่มี Array';
+                const info = previews[sid] || {};
+                const picsCount = info.saved_pics || 0;
 
                 return `
-                    <div class="rounded-xl border p-3.5 flex items-center justify-between gap-3.5 transition ${isPresent ? 'border-emerald-300 bg-emerald-50/40' : 'border-slate-200 bg-white'}">
-                        <div class="w-14 h-14 rounded-xl bg-slate-200 border border-slate-300 overflow-hidden flex-shrink-0 flex items-center justify-center">
+                    <div class="flex items-center justify-between p-2.5 rounded-xl border border-slate-200 bg-white hover:border-slate-300 transition gap-3">
+                        <div class="w-11 h-11 rounded-lg bg-slate-100 border border-slate-200 overflow-hidden flex-shrink-0 flex items-center justify-center">
                             <img
                                 src="/student_pic/${encodeURIComponent(sid)}?t=${picCacheBuster}"
                                 onerror="this.style.display='none'; this.nextElementSibling.style.display='flex';"
                                 class="w-full h-full object-cover"
                             />
-                            <div class="hidden w-full h-full items-center justify-center text-[10px] text-slate-500 text-center px-1">
+                            <div class="hidden w-full h-full items-center justify-center text-[10px] text-slate-400 font-mono">
                                 ${sid}
                             </div>
                         </div>
 
-                        <div class="min-w-0 flex-1 space-y-1">
-                            <div class="flex items-center gap-2 flex-wrap">
-                                <span class="font-mono text-sm font-bold text-indigo-800 bg-indigo-50 px-2.5 py-0.5 rounded">
-                                    ${sid}
-                                </span>
-                                <span class="text-xs font-semibold px-2 py-0.5 rounded-full ${isPresent ? 'bg-emerald-100 text-emerald-800' : 'bg-amber-100 text-amber-800'}">
-                                    ${isPresent ? '✅ ตรวจพบแล้ว (' + student.checkin_time + ')' : '⏳ รอตรวจจับ'}
-                                </span>
-                            </div>
-                            <p class="font-mono text-[11px] text-slate-600 truncate" title="${arrText}">
-                                ${arrText}
-                            </p>
+                        <div class="min-w-0 flex-1">
+                            <span class="font-mono text-xs font-bold text-slate-800">${sid}</span>
+                            <p class="text-[11px] text-slate-500">บันทึกแล้ว ${picsCount} ภาพ</p>
                         </div>
 
                         <div class="flex items-center gap-1.5 flex-shrink-0">
                             <button
                                 onclick="captureFace('${safeSid}')"
-                                class="text-xs bg-indigo-600 hover:bg-indigo-700 text-white px-2.5 py-1.5 rounded-lg font-medium transition">
-                                📸 Capture เพิ่ม
+                                class="inline-flex items-center text-xs bg-slate-100 hover:bg-slate-200 text-slate-700 px-2 py-1 rounded-lg font-medium transition"
+                                title="ถ่ายภาพเพิ่ม">
+                                ${SVG_ICONS.camera} ถ่ายเพิ่ม
                             </button>
-                            <label class="text-xs bg-slate-100 hover:bg-slate-200 text-slate-700 border border-slate-300 px-2.5 py-1.5 rounded-lg font-medium cursor-pointer transition">
-                                📁 อัปโหลด
-                                <input type="file" accept="image/*" class="hidden" onchange="uploadPhoto('${safeSid}', this)" />
+                            <label
+                                class="inline-flex items-center justify-center text-xs bg-slate-100 hover:bg-slate-200 text-slate-700 w-7 h-7 rounded-lg font-medium cursor-pointer transition"
+                                title="อัปโหลดรูปภาพ">
+                                ${SVG_ICONS.upload}
+                                <input type="file" accept="image/*" class="hidden" onchange="uploadStudentPhoto('${safeSid}', this)" />
                             </label>
                             <button
-                                onclick="deletePerson('${safeSid}')"
-                                class="text-xs bg-rose-50 hover:bg-rose-100 text-rose-600 border border-rose-200 px-2.5 py-1.5 rounded-lg font-medium transition">
-                                🗑️
+                                onclick="deleteStudentFace('${safeSid}')"
+                                class="inline-flex items-center justify-center text-xs bg-rose-50 hover:bg-rose-100 text-rose-600 w-7 h-7 rounded-lg font-medium transition"
+                                title="ลบข้อมูล">
+                                ${SVG_ICONS.trash}
                             </button>
                         </div>
                     </div>
@@ -318,44 +1044,245 @@
             }).join('');
         }
 
-        async function pollDashboard() {
+        // ==========================================
+        // API ACTION CALLS (Preserving all endpoints)
+        // ==========================================
+
+        async function captureNewFace() {
+            const input = document.getElementById('new-student-input');
+            const studentId = (input.value || '').trim();
+            if (!studentId) {
+                showToast('กรุณากรอกชื่อหรือรหัสนักเรียนก่อน', true);
+                input.focus();
+                return;
+            }
+            await captureFace(studentId);
+            input.value = '';
+        }
+
+        async function captureFace(studentId) {
+            showToast(`กำลังถ่ายภาพใบหน้า "${studentId}"...`);
             try {
-                const res = await fetch('/api/metrics');
-                if (!res.ok) return;
+                const res = await fetch(`/api/register-face/${encodeURIComponent(studentId)}`, { method: 'POST' });
                 const data = await res.json();
-
-                document.getElementById('metric-total').textContent = data.total_students;
-                document.getElementById('metric-present').textContent = data.present_students;
-                document.getElementById('metric-missing').textContent = data.missing_or_skipping;
-
-                if (data.vision) {
-                    document.getElementById('known-count').textContent = data.vision.known_faces_count;
-                    const totalArrEl = document.getElementById('total-arrays-count');
-                    if (totalArrEl) totalArrEl.textContent = data.vision.total_arrays_count || 0;
-                    document.getElementById('last-detected').textContent = data.vision.last_detected_id || 'ยังไม่มี';
-                    document.getElementById('last-detected-time').textContent = data.vision.last_detected_time || '-';
-                    if (data.vision.camera_name) {
-                        const nameEl = document.getElementById('active-camera-name');
-                        if (nameEl && nameEl.textContent !== data.vision.camera_name) {
-                            nameEl.textContent = data.vision.camera_name;
-                        }
-                    }
-                    if (data.vision.camera_index !== undefined) {
-                        const sel = document.getElementById('camera-select');
-                        if (sel && sel.value !== String(data.vision.camera_index)) {
-                            sel.value = String(data.vision.camera_index);
-                        }
-                    }
+                if (res.ok && data.success) {
+                    picCacheBuster = Date.now();
+                    showToast(`ถ่ายภาพและบันทึกข้อมูลใบหน้า "${studentId}" สำเร็จ!`);
+                    await pollDashboard();
+                } else {
+                    showToast(data.message || 'ไม่พบใบหน้าในกล้อง กรุณามองตรงที่กล้อง', true);
                 }
-
-                renderRoster(data.roster || [], data.vision || {});
             } catch (err) {
-                console.error('Poll error:', err);
+                showToast('เกิดข้อผิดพลาดในการเชื่อมต่อ', true);
             }
         }
 
-        pollDashboard();
-        setInterval(pollDashboard, 1500);
+        async function uploadStudentPhoto(studentId, inputEl) {
+            if (!inputEl.files || !inputEl.files[0]) return;
+            const formData = new FormData();
+            formData.append('file', inputEl.files[0]);
+
+            showToast(`กำลังอัปโหลดรูปภาพของ "${studentId}"...`);
+            try {
+                const res = await fetch(`/api/upload-face/${encodeURIComponent(studentId)}`, {
+                    method: 'POST',
+                    body: formData
+                });
+                const data = await res.json();
+                if (res.ok && data.success) {
+                    picCacheBuster = Date.now();
+                    showToast(`อัปโหลดรูปภาพของ "${studentId}" สำเร็จ!`);
+                    await pollDashboard();
+                } else {
+                    showToast(data.message || 'ไม่พบใบหน้าในรูปภาพที่อัปโหลด', true);
+                }
+            } catch (err) {
+                showToast('เกิดข้อผิดพลาดในการอัปโหลดรูป', true);
+            }
+        }
+
+        async function deleteStudentFace(studentId) {
+            if (!confirm(`ต้องการลบข้อมูลใบหน้าและประวัติของ "${studentId}" ใช่หรือไม่?`)) return;
+
+            try {
+                const res = await fetch(`/api/face-data/${encodeURIComponent(studentId)}`, { method: 'DELETE' });
+                const data = await res.json();
+                if (res.ok && data.success) {
+                    showToast(`ลบข้อมูลของ "${studentId}" เรียบร้อยแล้ว`);
+                    await pollDashboard();
+                } else {
+                    showToast(data.message || 'ไม่สามารถลบข้อมูลได้', true);
+                }
+            } catch (err) {
+                showToast('เกิดข้อผิดพลาดในการลบข้อมูล', true);
+            }
+        }
+
+        async function switchCamera(camIndex) {
+            showToast(`กำลังสลับสัญญาณไปยังกล้อง ${camIndex}...`);
+            try {
+                const res = await fetch(`/api/switch-camera/${camIndex}`, { method: 'POST' });
+                const data = await res.json();
+                if (res.ok && data.success) {
+                    showToast(`สลับกล้องเป็น ${data.camera_name} เรียบร้อย`);
+                    const lbl = document.getElementById('active-camera-label');
+                    if (lbl) lbl.textContent = data.camera_name;
+                    await pollDashboard();
+                } else {
+                    showToast(`ไม่สามารถเปิดกล้อง Index ${camIndex} ได้`, true);
+                }
+            } catch (err) {
+                showToast('เกิดข้อผิดพลาดในการสลับกล้อง', true);
+            }
+        }
+
+        async function syncFolderNow() {
+            showToast('กำลังนำเข้าและประมวลผลรูปภาพทั้งหมด...');
+            try {
+                const res = await fetch('/api/sync-now', { method: 'POST' });
+                if (res.ok) {
+                    picCacheBuster = Date.now();
+                    showToast('ซิงค์ข้อมูลรูปภาพและทะเบียนรายชื่อเรียบร้อย!');
+                    await pollDashboard();
+                }
+            } catch (err) {
+                showToast('เกิดข้อผิดพลาดในการซิงค์ข้อมูล', true);
+            }
+        }
+
+        async function confirmResetAttendance() {
+            if (!confirm('ยืนยันการรีเซ็ตผลการเช็คชื่อทั้งหมดของวันนี้หรือไม่? (ข้อมูลใบหน้าจะไม่ถูกลบ)')) return;
+            try {
+                const res = await fetch('/api/reset-test', { method: 'POST' });
+                if (res.ok) {
+                    showToast('รีเซ็ตผลการเช็คชื่อวันนี้เรียบร้อยแล้ว');
+                    await pollDashboard();
+                }
+            } catch (err) {
+                showToast('เกิดข้อผิดพลาดในการรีเซ็ตผลการเช็คชื่อ', true);
+            }
+        }
+
+        // ==========================================
+        // UNIFIED PERIODIC POLLING (Single Loop)
+        // ==========================================
+        async function pollDashboard() {
+            try {
+                const res = await fetch('/api/metrics');
+                if (!res.ok) {
+                    updateLiveIndicator(false);
+                    return;
+                }
+
+                const data = await res.json();
+                lastSuccessfulPollTimestamp = Date.now();
+                updateLiveIndicator(true);
+
+                cachedMetrics = data;
+                cachedRoster = data.roster || [];
+                cachedVision = data.vision || {};
+
+                // 1. Update Metric Cards
+                const total = Number(data.total_students) || 0;
+                const present = Number(data.present_students) || 0;
+                const missing = Number(data.missing_or_skipping) || 0;
+                const rate = total > 0 ? Number(data.attendance_rate || 0) : 0.0;
+
+                const mTotalEl = document.getElementById('metric-total');
+                const mPresentEl = document.getElementById('metric-present');
+                const mMissingEl = document.getElementById('metric-missing');
+                const mRateEl = document.getElementById('metric-rate');
+                const headerDateEl = document.getElementById('header-date');
+
+                if (mTotalEl) mTotalEl.textContent = total;
+                if (mPresentEl) mPresentEl.textContent = present;
+                if (mMissingEl) mMissingEl.textContent = missing;
+                if (mRateEl) mRateEl.textContent = rate.toFixed(1);
+                if (headerDateEl && data.date) headerDateEl.textContent = formatThaiDate(data.date);
+
+                // 2. Update SVG Donut Chart (Mathematical consistency guaranteed)
+                updateDonutChart(total, present, missing, rate);
+                const chartPresEl = document.getElementById('chart-present-count');
+                const chartMissEl = document.getElementById('chart-missing-count');
+                if (chartPresEl) chartPresEl.textContent = present;
+                if (chartMissEl) chartMissEl.textContent = missing;
+
+                // 3. Update Recent Attendance (Text-only)
+                renderRecentAttendance(cachedRoster);
+
+                // 4. Update Filter Counts and Attendance Table
+                const countAllEl = document.getElementById('count-filter-all');
+                const countPresEl = document.getElementById('count-filter-present');
+                const countMissEl = document.getElementById('count-filter-missing');
+                const countExcEl = document.getElementById('count-filter-excused');
+
+                if (countAllEl) countAllEl.textContent = cachedRoster.length;
+                if (countPresEl) countPresEl.textContent = cachedRoster.filter(s => s.status_code === 'present').length;
+                if (countMissEl) countMissEl.textContent = cachedRoster.filter(s => s.status_code === 'missing').length;
+                if (countExcEl) countExcEl.textContent = cachedRoster.filter(s => s.status_code === 'excused').length;
+
+                filterAttendanceTable();
+
+                // 5. Update Camera Section & Registered Faces
+                if (cachedVision) {
+                    const camLastIdEl = document.getElementById('camera-last-detected');
+                    const camLastTimeEl = document.getElementById('camera-last-detected-time');
+                    const camLabelEl = document.getElementById('active-camera-label');
+                    const camSelectEl = document.getElementById('camera-select');
+                    const statusCamTextEl = document.getElementById('status-camera-text');
+                    const statusCamDotEl = document.getElementById('status-camera-dot');
+
+                    if (camLastIdEl) camLastIdEl.textContent = cachedVision.last_detected_id || 'ยังไม่มี';
+                    if (camLastTimeEl) camLastTimeEl.textContent = cachedVision.last_detected_time || '-';
+                    
+                    if (camLabelEl && cachedVision.camera_name) camLabelEl.textContent = cachedVision.camera_name;
+                    if (camSelectEl && cachedVision.camera_index !== undefined) {
+                        if (camSelectEl.value !== String(cachedVision.camera_index)) {
+                            camSelectEl.value = String(cachedVision.camera_index);
+                        }
+                    }
+
+                    if (statusCamTextEl) {
+                        statusCamTextEl.textContent = cachedVision.camera_active
+                            ? `กล้องพร้อมใช้งาน (${cachedVision.camera_name || 'Webcam'})`
+                            : 'ไม่พบการเชื่อมต่อกล้อง';
+                    }
+                    if (statusCamDotEl) {
+                        statusCamDotEl.className = `w-2.5 h-2.5 rounded-full ${cachedVision.camera_active ? 'bg-emerald-500' : 'bg-amber-500'}`;
+                    }
+
+                    renderRegisteredFaces(cachedVision);
+                }
+
+                // 6. Update Last Updated Timestamp
+                const statusUpdatedEl = document.getElementById('status-last-updated');
+                if (statusUpdatedEl) {
+                    const now = new Date();
+                    const timeStr = now.toTimeString().split(' ')[0];
+                    statusUpdatedEl.textContent = `อัปเดตล่าสุด: ${timeStr}`;
+                }
+
+            } catch (err) {
+                console.error('Polling error:', err);
+                updateLiveIndicator(false);
+            }
+        }
+
+        // Check for stale data connection every 3 seconds
+        setInterval(() => {
+            if (lastSuccessfulPollTimestamp > 0 && (Date.now() - lastSuccessfulPollTimestamp) > 5000) {
+                updateLiveIndicator(false);
+            }
+        }, 3000);
+
+        // Initialization on window load
+        window.addEventListener('DOMContentLoaded', () => {
+            initTabFromHash();
+            window.addEventListener('hashchange', initTabFromHash);
+            pollDashboard();
+            // Single polling loop every 1.5 seconds
+            setInterval(pollDashboard, 1500);
+        });
     </script>
 </body>
 </html>
