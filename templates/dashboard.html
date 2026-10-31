@@ -1,0 +1,361 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>ระบบตรวจจับใบหน้าเรียลไทม์ (Capture -> Save Folder -> Process Array)</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Sarabun:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    <style>
+        body { font-family: 'Sarabun', sans-serif; }
+    </style>
+</head>
+<body class="bg-slate-100 text-slate-800 min-h-screen flex flex-col">
+    <!-- Header -->
+    <header class="bg-indigo-900 text-white shadow-md">
+        <div class="max-w-7xl mx-auto px-4 py-4 flex flex-wrap justify-between items-center gap-4">
+            <div class="flex items-center gap-3">
+                <div class="w-10 h-10 rounded-xl bg-indigo-600 flex items-center justify-center font-bold text-xl shadow">
+                    📷
+                </div>
+                <div>
+                    <h1 class="text-xl font-bold tracking-wide">
+                        ระบบตรวจจับใบหน้าเรียลไทม์ (Capture ➔ Save in Folder ➔ Process Array)
+                    </h1>
+                    <p class="text-xs text-indigo-200">
+                        แสดงเฉพาะกรอบและป้ายชื่อรอบใบหน้า (ไม่มีเส้นบนหน้า) • ถ่ายรูปเข้าโฟลเดอร์ <code>faces/</code> แล้วแปลงเป็น Array ทันที
+                    </p>
+                </div>
+            </div>
+
+            <div class="flex flex-wrap items-center gap-2">
+                <button onclick="syncFolderNow()" class="text-xs bg-indigo-600 hover:bg-indigo-500 px-3.5 py-1.5 rounded-lg font-medium transition">
+                    📂 Import รูปจากโฟลเดอร์ faces/ ➔ Array
+                </button>
+                <button onclick="resetTest()" class="text-xs bg-rose-600 hover:bg-rose-500 px-3.5 py-1.5 rounded-lg font-medium transition">
+                    🗑️ รีเซ็ตผลสแกนวันนี้
+                </button>
+            </div>
+        </div>
+    </header>
+
+    <main class="max-w-7xl mx-auto w-full px-4 py-6 flex-1 space-y-6">
+        <!-- 3 Metrics -->
+        <section class="grid grid-cols-1 md:grid-cols-3 gap-5">
+            <div class="bg-white rounded-2xl p-5 shadow-sm border border-slate-200 flex items-center justify-between">
+                <div>
+                    <p class="text-sm font-semibold text-slate-500">จำนวนคนที่บันทึกไว้ (Total People)</p>
+                    <p id="metric-total" class="text-4xl font-extrabold text-slate-800 mt-1">{{ metrics.total_students }}</p>
+                    <p class="text-xs text-slate-400 mt-1">ในโฟลเดอร์ <code>faces/</code> &amp; <code>face_data.json</code></p>
+                </div>
+                <div class="w-14 h-14 rounded-2xl bg-indigo-50 text-indigo-600 flex items-center justify-center text-3xl">
+                    👥
+                </div>
+            </div>
+
+            <div class="bg-white rounded-2xl p-5 shadow-sm border border-emerald-200 flex items-center justify-between">
+                <div>
+                    <p class="text-sm font-semibold text-emerald-700">ตรวจพบใบหน้าแล้ววันนี้ (Detected)</p>
+                    <p id="metric-present" class="text-4xl font-extrabold text-emerald-600 mt-1">{{ metrics.present_students }}</p>
+                    <p class="text-xs text-slate-400 mt-1">สแกนตรงกับ Array สำเร็จ</p>
+                </div>
+                <div class="w-14 h-14 rounded-2xl bg-emerald-50 text-emerald-600 flex items-center justify-center text-3xl">
+                    ✅
+                </div>
+            </div>
+
+            <div class="bg-white rounded-2xl p-5 shadow-sm border border-rose-200 flex items-center justify-between">
+                <div>
+                    <p class="text-sm font-semibold text-rose-700">ยังไม่ได้สแกน (Remaining)</p>
+                    <p id="metric-missing" class="text-4xl font-extrabold text-rose-600 mt-1">{{ metrics.missing_or_skipping }}</p>
+                    <p class="text-xs text-slate-400 mt-1">รอตรวจจับใบหน้า</p>
+                </div>
+                <div class="w-14 h-14 rounded-2xl bg-rose-50 text-rose-600 flex items-center justify-center text-3xl">
+                    ⏳
+                </div>
+            </div>
+        </section>
+
+        <!-- Camera + Capture Controls -->
+        <section class="grid grid-cols-1 lg:grid-cols-12 gap-6">
+            <!-- Left: Live Camera Stream -->
+            <div class="lg:col-span-6 bg-white rounded-2xl shadow-sm border border-slate-200 p-5 flex flex-col justify-between space-y-4">
+                <div>
+                    <div class="flex items-center justify-between mb-3">
+                        <div class="flex items-center gap-2">
+                            <span class="w-3 h-3 rounded-full {{ 'bg-emerald-500 animate-pulse' if vision_status.camera_active else 'bg-amber-500' }}"></span>
+                            <h2 class="font-bold text-slate-800">ภาพสดจาก <span id="active-camera-name" class="text-indigo-700">{{ vision_status.camera_name or 'Webcam (Index 1)' }}</span></h2>
+                        </div>
+                        <div class="flex items-center gap-2">
+                            <select id="camera-select" onchange="switchCamera(this.value)" class="text-xs border border-slate-300 rounded-lg px-2 py-1 bg-slate-50 font-medium text-slate-700 focus:outline-none focus:ring-2 focus:ring-indigo-500">
+                                <option value="1" {{ 'selected' if vision_status.camera_index == 1 else '' }}>📹 Webcam USB (Index 1)</option>
+                                <option value="0" {{ 'selected' if vision_status.camera_index == 0 else '' }}>💻 กล้องหลัก PC (Index 0)</option>
+                            </select>
+                            <span class="text-xs bg-slate-100 text-slate-600 px-2 py-1 rounded-md font-mono">
+                                Saved: <strong id="known-count">{{ vision_status.known_faces_count }}</strong> คน
+                            </span>
+                        </div>
+                    </div>
+
+                    <div class="rounded-xl overflow-hidden bg-slate-900 border border-slate-800 aspect-video flex items-center justify-center relative">
+                        <img src="/video_feed" alt="camera_pc stream" class="w-full h-full object-contain" />
+                    </div>
+                </div>
+
+                <div class="bg-indigo-50/80 border border-indigo-100 rounded-xl p-3.5 text-xs text-indigo-950 space-y-1">
+                    <p class="font-bold text-indigo-900">💡 ขั้นตอนการทำงาน (Capture ➔ Folder ➔ Array ➔ Real-Time):</p>
+                    <p>1. <strong>Capture:</strong> พิมพ์ชื่อ/รหัสทางขวาแล้วกด <strong>"📸 Capture"</strong> (หรือกดปุ่ม <code>C</code> / <code>1-7</code> ในหน้าต่างกล้อง)</p>
+                    <p>2. <strong>Import in Folder &amp; Process Array:</strong> ระบบเซฟรูปลงโฟลเดอร์ <code>faces/</code> และสกัดค่าใบหน้าในรูปเป็น <strong>Array 128 มิติ</strong> เก็บใน <code>face_data.json</code> ทันทีโดยไม่เด้งหลุด</p>
+                    <p>3. <strong>Real-Time Detection:</strong> ตีกรอบสี่เหลี่ยมและป้ายชื่อเคลื่อนที่ตามใบหน้าแบบเรียลไทม์</p>
+                    <div class="pt-1 border-t border-indigo-200 text-indigo-700">
+                        • ตรวจพบล่าสุด: <strong id="last-detected">{{ vision_status.last_detected_id or 'ยังไม่มี' }}</strong>
+                        (<span id="last-detected-time">{{ vision_status.last_detected_time or '-' }}</span>)
+                    </div>
+                </div>
+            </div>
+
+            <!-- Right: Capture & Saved List -->
+            <div class="lg:col-span-6 bg-white rounded-2xl shadow-sm border border-slate-200 p-5 space-y-4 flex flex-col">
+                <div class="flex flex-wrap items-center justify-between gap-2 border-b border-slate-100 pb-3">
+                    <div>
+                        <h2 class="font-bold text-slate-800">Capture รูปใบหน้า ➔ แปลงเป็น Array</h2>
+                        <p class="text-xs text-slate-500">เซฟรูปลงโฟลเดอร์ <code>faces/</code> และแปลงเป็น Array ใน <code>face_data.json</code></p>
+                    </div>
+                    <span id="toast-msg" class="text-xs font-semibold text-indigo-600"></span>
+                </div>
+
+                <!-- Capture Input -->
+                <div class="bg-slate-50 border border-slate-200 rounded-xl p-4 space-y-3">
+                    <label class="block text-xs font-bold text-slate-700">
+                        ➕ พิมพ์ชื่อหรือรหัส (Label / ID) แล้วกด Capture:
+                    </label>
+                    <div class="flex flex-wrap gap-2">
+                        <input
+                            id="new-label-input"
+                            type="text"
+                            placeholder="พิมพ์ชื่อหรือรหัส เช่น 66001..."
+                            class="flex-1 min-w-[180px] text-sm border border-slate-300 rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                            onkeydown="if(event.key==='Enter') captureNewLabel()"
+                        />
+                        <button
+                            onclick="captureNewLabel()"
+                            class="text-xs bg-indigo-600 hover:bg-indigo-700 text-white px-4 py-2 rounded-lg font-semibold transition shadow-sm">
+                            📸 Capture ➔ Save &amp; Array
+                        </button>
+                    </div>
+                </div>
+
+                <!-- Dynamic List -->
+                <div id="roster-container" class="space-y-3 flex-1 overflow-y-auto max-h-[420px] pr-1">
+                </div>
+            </div>
+        </section>
+    </main>
+
+    <script>
+        let picCacheBuster = Date.now();
+
+        function showToast(msg, isError = false) {
+            const el = document.getElementById('toast-msg');
+            el.className = isError ? 'text-xs font-semibold text-rose-600' : 'text-xs font-semibold text-emerald-600';
+            el.textContent = msg;
+        }
+
+        async function captureNewLabel() {
+            const input = document.getElementById('new-label-input');
+            const label = (input.value || '').trim();
+            if (!label) {
+                showToast('กรุณาพิมพ์ชื่อหรือรหัสก่อนกด Capture', true);
+                input.focus();
+                return;
+            }
+            await captureFace(label);
+        }
+
+        async function captureFace(studentId) {
+            showToast(`กำลัง Capture "${studentId}" ลงโฟลเดอร์ faces/ และแปลงเป็น Array...`);
+            const res = await fetch(`/api/register-face/${encodeURIComponent(studentId)}`, { method: 'POST' });
+            const data = await res.json();
+            if (res.ok && data.success) {
+                picCacheBuster = Date.now();
+                showToast(`Capture "${studentId}" สำเร็จ! บันทึกรูปใน faces/ และแปลงเป็น Array แล้ว`);
+                await pollDashboard();
+            } else {
+                showToast(data.message || 'ไม่พบใบหน้าในกล้อง กรุหันหน้ามองกล้อง', true);
+            }
+        }
+
+        async function uploadPhoto(studentId, inputEl) {
+            if (!inputEl.files || !inputEl.files[0]) return;
+            const formData = new FormData();
+            formData.append('file', inputEl.files[0]);
+
+            showToast(`กำลังบันทึกรูปลง faces/${studentId}/ และแปลงเป็น Array...`);
+            const res = await fetch(`/api/upload-face/${encodeURIComponent(studentId)}`, {
+                method: 'POST',
+                body: formData
+            });
+            const data = await res.json();
+            if (res.ok && data.success) {
+                picCacheBuster = Date.now();
+                showToast('อัปโหลดรูปและแปลงเป็น Array สำเร็จ!');
+                await pollDashboard();
+            } else {
+                showToast(data.message || 'ไม่พบใบหน้าในรูปภาพ', true);
+            }
+        }
+
+        async function deletePerson(studentId) {
+            const res = await fetch(`/api/face-data/${encodeURIComponent(studentId)}`, { method: 'DELETE' });
+            const data = await res.json();
+            if (res.ok && data.success) {
+                showToast(`ลบข้อมูลของ "${studentId}" เรียบร้อยแล้ว`);
+                await pollDashboard();
+            }
+        }
+
+        async function switchCamera(camIndex) {
+            showToast(`กำลังสลับไปยังกล้อง Index ${camIndex}...`);
+            const res = await fetch(`/api/switch-camera/${camIndex}`, { method: 'POST' });
+            const data = await res.json();
+            if (res.ok && data.success) {
+                showToast(`สลับกล้องเป็น ${data.camera_name} สำเร็จ!`);
+                const nameEl = document.getElementById('active-camera-name');
+                if (nameEl) nameEl.textContent = data.camera_name;
+            } else {
+                showToast(`ไม่สามารถเปิดกล้อง Index ${camIndex} ได้`, true);
+            }
+        }
+
+        async function syncFolderNow() {
+            showToast('กำลัง Import รูปจากโฟลเดอร์ faces/ มาแปลงเป็น Array...');
+            const res = await fetch('/api/sync-now', { method: 'POST' });
+            if (res.ok) {
+                picCacheBuster = Date.now();
+                showToast('Import รูปในโฟลเดอร์ faces/ เป็น Array เรียบร้อยแล้ว!');
+                await pollDashboard();
+            }
+        }
+
+        async function resetTest() {
+            const res = await fetch('/api/reset-test', { method: 'POST' });
+            if (res.ok) {
+                showToast('รีเซ็ตผลการเช็คชื่อเรียบร้อยแล้ว');
+                await pollDashboard();
+            }
+        }
+
+        function renderRoster(roster, vision) {
+            const container = document.getElementById('roster-container');
+            if (!roster || roster.length === 0) {
+                container.innerHTML = `
+                    <div class="bg-slate-50 border border-dashed border-slate-300 rounded-xl p-6 text-center space-y-2 text-slate-500">
+                        <div class="text-2xl">📷</div>
+                        <p class="text-sm font-semibold text-slate-700">ยังไม่มีข้อมูลที่ Capture</p>
+                        <p class="text-xs">พิมพ์ชื่อ/รหัสในช่องด้านบนแล้วกด <strong>"📸 Capture"</strong> หรือวางรูปในโฟลเดอร์ <code>faces/</code></p>
+                    </div>
+                `;
+                return;
+            }
+
+            const previews = (vision && vision.array_previews) || {};
+            container.innerHTML = roster.map(student => {
+                const sid = student.student_id;
+                const safeSid = sid.replace(/'/g, "\\'");
+                const isPresent = student.status_code === 'present';
+                const arrInfo = previews[sid];
+                const samplesCount = arrInfo ? arrInfo.samples : 0;
+                const picsCount = arrInfo ? arrInfo.saved_pics : 0;
+                const arrText = arrInfo
+                    ? `📂 faces/${sid} (${picsCount} รูป) ➔ 🔢 Array[128] (${samplesCount} samples): ${arrInfo.preview}`
+                    : 'ยังไม่มี Array';
+
+                return `
+                    <div class="rounded-xl border p-3.5 flex items-center justify-between gap-3.5 transition ${isPresent ? 'border-emerald-300 bg-emerald-50/40' : 'border-slate-200 bg-white'}">
+                        <div class="w-14 h-14 rounded-xl bg-slate-200 border border-slate-300 overflow-hidden flex-shrink-0 flex items-center justify-center">
+                            <img
+                                src="/student_pic/${encodeURIComponent(sid)}?t=${picCacheBuster}"
+                                onerror="this.style.display='none'; this.nextElementSibling.style.display='flex';"
+                                class="w-full h-full object-cover"
+                            />
+                            <div class="hidden w-full h-full items-center justify-center text-[10px] text-slate-500 text-center px-1">
+                                ${sid}
+                            </div>
+                        </div>
+
+                        <div class="min-w-0 flex-1 space-y-1">
+                            <div class="flex items-center gap-2 flex-wrap">
+                                <span class="font-mono text-sm font-bold text-indigo-800 bg-indigo-50 px-2.5 py-0.5 rounded">
+                                    ${sid}
+                                </span>
+                                <span class="text-xs font-semibold px-2 py-0.5 rounded-full ${isPresent ? 'bg-emerald-100 text-emerald-800' : 'bg-amber-100 text-amber-800'}">
+                                    ${isPresent ? '✅ ตรวจพบแล้ว (' + student.checkin_time + ')' : '⏳ รอตรวจจับ'}
+                                </span>
+                            </div>
+                            <p class="font-mono text-[11px] text-slate-600 truncate" title="${arrText}">
+                                ${arrText}
+                            </p>
+                        </div>
+
+                        <div class="flex items-center gap-1.5 flex-shrink-0">
+                            <button
+                                onclick="captureFace('${safeSid}')"
+                                class="text-xs bg-indigo-600 hover:bg-indigo-700 text-white px-2.5 py-1.5 rounded-lg font-medium transition">
+                                📸 Capture เพิ่ม
+                            </button>
+                            <label class="text-xs bg-slate-100 hover:bg-slate-200 text-slate-700 border border-slate-300 px-2.5 py-1.5 rounded-lg font-medium cursor-pointer transition">
+                                📁 อัปโหลด
+                                <input type="file" accept="image/*" class="hidden" onchange="uploadPhoto('${safeSid}', this)" />
+                            </label>
+                            <button
+                                onclick="deletePerson('${safeSid}')"
+                                class="text-xs bg-rose-50 hover:bg-rose-100 text-rose-600 border border-rose-200 px-2.5 py-1.5 rounded-lg font-medium transition">
+                                🗑️
+                            </button>
+                        </div>
+                    </div>
+                `;
+            }).join('');
+        }
+
+        async function pollDashboard() {
+            try {
+                const res = await fetch('/api/metrics');
+                if (!res.ok) return;
+                const data = await res.json();
+
+                document.getElementById('metric-total').textContent = data.total_students;
+                document.getElementById('metric-present').textContent = data.present_students;
+                document.getElementById('metric-missing').textContent = data.missing_or_skipping;
+
+                if (data.vision) {
+                    document.getElementById('known-count').textContent = data.vision.known_faces_count;
+                    const totalArrEl = document.getElementById('total-arrays-count');
+                    if (totalArrEl) totalArrEl.textContent = data.vision.total_arrays_count || 0;
+                    document.getElementById('last-detected').textContent = data.vision.last_detected_id || 'ยังไม่มี';
+                    document.getElementById('last-detected-time').textContent = data.vision.last_detected_time || '-';
+                    if (data.vision.camera_name) {
+                        const nameEl = document.getElementById('active-camera-name');
+                        if (nameEl && nameEl.textContent !== data.vision.camera_name) {
+                            nameEl.textContent = data.vision.camera_name;
+                        }
+                    }
+                    if (data.vision.camera_index !== undefined) {
+                        const sel = document.getElementById('camera-select');
+                        if (sel && sel.value !== String(data.vision.camera_index)) {
+                            sel.value = String(data.vision.camera_index);
+                        }
+                    }
+                }
+
+                renderRoster(data.roster || [], data.vision || {});
+            } catch (err) {
+                console.error('Poll error:', err);
+            }
+        }
+
+        pollDashboard();
+        setInterval(pollDashboard, 1500);
+    </script>
+</body>
+</html>
