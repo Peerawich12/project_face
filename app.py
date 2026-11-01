@@ -53,9 +53,15 @@ async def dashboard_page(request: Request):
     vision_status = vision_engine.get_status()
 
     return templates.TemplateResponse(
+<<<<<<< HEAD
         "dashboard.html",
         {
             "request": request,
+=======
+        request=request,
+        name="dashboard.html",
+        context={
+>>>>>>> a178a6f (from mac)
             "metrics": metrics,
             "roster": roster,
             "vision_status": vision_status,
