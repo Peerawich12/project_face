@@ -22,6 +22,7 @@ except ImportError:
     FACE_RECOGNITION_AVAILABLE = False
 
 from data_sync import AttendanceStore, attendance_store
+from supabase_sync import parse_faceshape_to_samples, supabase_manager
 
 logger = logging.getLogger("school_attendance.vision")
 
@@ -429,17 +430,90 @@ class VisionEngine:
 
         return len(self.known_person_arrays)
 
+    def extract_faceshape_from_current_frame(self) -> Optional[List[float]]:
+        """Extract 128-d face-shape array from the current webcam frame without saving yet."""
+        with self._frame_lock:
+            frame = self._latest_raw_frame.copy() if self._latest_raw_frame is not None else None
+        if frame is None or not FACE_RECOGNITION_AVAILABLE:
+            return None
+        return self._extract_array_from_bgr(frame)
+
+    def extract_faceshape_from_image_bytes(self, image_bytes: bytes) -> Optional[List[float]]:
+        """Extract 128-d face-shape array from uploaded image bytes."""
+        if not image_bytes or not FACE_RECOGNITION_AVAILABLE:
+            return None
+        arr_bytes = np.frombuffer(image_bytes, dtype=np.uint8)
+        bgr = cv2.imdecode(arr_bytes, cv2.IMREAD_COLOR)
+        if bgr is None:
+            return None
+        return self._extract_array_from_bgr(bgr)
+
+    def save_custom_faceshape_record(
+        self,
+        id_name: str,
+        m: str,
+        array_faceshape: List[List[float]],
+        append_sample: bool = False,
+    ) -> List[List[float]]:
+        """
+        Save `(id_name, m, array_faceshape)` into local `face_data.json` and `AttendanceStore`,
+        and reload known faces for real-time recognition.
+        """
+        sid = str(id_name).strip()
+        m_clean = str(m or "").strip() or "-"
+        new_samples = parse_faceshape_to_samples(array_faceshape)
+        if not sid or not new_samples:
+            return []
+
+        face_data = _load_face_data(self.face_data_file)
+        if append_sample and sid in face_data:
+            combined = face_data[sid] + new_samples
+        else:
+            combined = new_samples
+
+        face_data[sid] = combined
+        _save_face_data(self.face_data_file, face_data)
+
+        self.store.register_person(sid, classroom=m_clean)
+        self.load_known_faces()
+        self.last_seen.pop(sid, None)
+        return combined
+
+    def push_all_local_to_supabase(self) -> Tuple[int, List[str]]:
+        """Push all local records in `face_data.json` to Supabase."""
+        face_data = _load_face_data(self.face_data_file)
+        pushed_count = 0
+        errors: List[str] = []
+        for sid, samples in face_data.items():
+            if not samples:
+                continue
+            m_val = self.store.get_person_m(sid)
+            ok, msg, _ = supabase_manager.upsert_record(
+                id_name=sid,
+                m=m_val,
+                array_faceshape=samples,
+                append_sample=False,
+            )
+            if ok:
+                pushed_count += 1
+            else:
+                errors.append(f"{sid}: {msg}")
+        return pushed_count, errors
+
     def register_face_from_frame(
         self,
         student_id: str,
         frame: Optional[np.ndarray] = None,
+        m: str = "-",
     ) -> bool:
         """
         Capture current frame (works at close range OR at a distance!),
-        save image into `faces/`, extract normalized 128-d array, and save to `face_data.json`.
+        save image into `faces/`, extract normalized 128-d array, save to `face_data.json`,
+        and sync `(id_name, m, array_faceshape)` to Supabase if configured.
         """
         try:
             student_id = str(student_id).strip()
+            m_clean = str(m or "").strip() or "-"
             if not student_id:
                 return False
 
@@ -484,11 +558,21 @@ class VisionEngine:
 
             # 3. Update folder signature and reload arrays into memory
             self._last_folder_signature = self._compute_folder_signature()
-            self.store.register_person(student_id)
+            self.store.register_person(student_id, classroom=m_clean)
             self.load_known_faces()
             self.last_seen.pop(student_id, None)
 
-            # 4. Update tracked face label immediately
+            # 4. Sync to Supabase if configured on default store
+            if self.face_data_file == FACE_DATA_FILE and supabase_manager.is_configured:
+                resolved_m = self.store.get_person_m(student_id)
+                supabase_manager.upsert_record(
+                    id_name=student_id,
+                    m=resolved_m,
+                    array_faceshape=current_arrays,
+                    append_sample=False,
+                )
+
+            # 5. Update tracked face label immediately
             top, right, bottom, left = target_box
             cx, cy = (left + right) * 0.5, (top + bottom) * 0.5
             with self._track_lock:
@@ -513,9 +597,15 @@ class VisionEngine:
 
     capture_student_picture = register_face_from_frame
 
-    def register_face_from_upload(self, student_id: str, image_bytes: bytes) -> bool:
+    def register_face_from_upload(
+        self,
+        student_id: str,
+        image_bytes: bytes,
+        m: str = "-",
+    ) -> bool:
         try:
             student_id = str(student_id).strip()
+            m_clean = str(m or "").strip() or "-"
             if not student_id:
                 return False
 
@@ -544,9 +634,19 @@ class VisionEngine:
             _save_face_data(self.face_data_file, face_data)
 
             self._last_folder_signature = self._compute_folder_signature()
-            self.store.register_person(student_id)
+            self.store.register_person(student_id, classroom=m_clean)
             self.load_known_faces()
             self.last_seen.pop(student_id, None)
+
+            if self.face_data_file == FACE_DATA_FILE and supabase_manager.is_configured:
+                resolved_m = self.store.get_person_m(student_id)
+                supabase_manager.upsert_record(
+                    id_name=student_id,
+                    m=resolved_m,
+                    array_faceshape=current_list,
+                    append_sample=False,
+                )
+
             return True
         except Exception as exc:
             logger.error("Upload error for %s: %s", student_id, exc)
@@ -571,6 +671,11 @@ class VisionEngine:
             p = self.faces_dir / f"{student_id}{ext}"
             if p.exists():
                 p.unlink()
+                existed = True
+
+        if self.face_data_file == FACE_DATA_FILE and supabase_manager.is_configured:
+            ok_del, _ = supabase_manager.delete_record(student_id)
+            if ok_del:
                 existed = True
 
         self._last_folder_signature = self._compute_folder_signature()
@@ -1027,10 +1132,13 @@ class VisionEngine:
                 else (1 if (self.faces_dir / f"{sid}.jpg").exists() else 0)
             )
             array_previews[sid] = {
+                "id_name": sid,
+                "m": self.store.get_person_m(sid),
                 "samples": len(enc_list),
                 "saved_pics": saved_pics,
                 "dims": min(128, len(first_vec)),
                 "preview": f"[{preview_nums}, ...]",
+                "array_faceshape": enc_list,
             }
 
         return {

@@ -59,24 +59,31 @@
             </div>
 
             <!-- Center: Navigation Tabs (Pill Style) -->
-            <nav class="flex items-center p-1 bg-slate-100/90 border border-slate-200 rounded-xl text-xs sm:text-sm font-medium">
+            <nav class="flex items-center p-1 bg-slate-100/90 border border-slate-200 rounded-xl text-xs sm:text-sm font-medium overflow-x-auto">
                 <button
                     id="tab-btn-dashboard"
                     onclick="switchTab('dashboard')"
-                    class="px-3 sm:px-4 py-1.5 rounded-lg transition-all text-slate-800 bg-white shadow-sm font-semibold">
+                    class="px-3 sm:px-4 py-1.5 rounded-lg transition-all text-slate-800 bg-white shadow-sm font-semibold whitespace-nowrap">
                     ภาพรวม
                 </button>
                 <button
                     id="tab-btn-attendance"
                     onclick="switchTab('attendance')"
-                    class="px-3 sm:px-4 py-1.5 rounded-lg transition-all text-slate-600 hover:text-slate-900">
+                    class="px-3 sm:px-4 py-1.5 rounded-lg transition-all text-slate-600 hover:text-slate-900 whitespace-nowrap">
                     การเข้าเรียน
                 </button>
                 <button
                     id="tab-btn-camera"
                     onclick="switchTab('camera')"
-                    class="px-3 sm:px-4 py-1.5 rounded-lg transition-all text-slate-600 hover:text-slate-900">
+                    class="px-3 sm:px-4 py-1.5 rounded-lg transition-all text-slate-600 hover:text-slate-900 whitespace-nowrap">
                     กล้องและลงทะเบียน
+                </button>
+                <button
+                    id="tab-btn-supabase"
+                    onclick="switchTab('supabase')"
+                    class="px-3 sm:px-4 py-1.5 rounded-lg transition-all text-slate-600 hover:text-slate-900 whitespace-nowrap inline-flex items-center gap-1.5">
+                    <span id="nav-sb-dot" class="w-2 h-2 rounded-full {{ 'bg-emerald-500' if supabase_status and supabase_status.connected else 'bg-amber-400' }}"></span>
+                    <span>ข้อมูล Supabase</span>
                 </button>
             </nav>
 
@@ -519,21 +526,29 @@
                     </div>
 
                     <!-- Input Form: Capture New Face -->
-                    <div class="bg-slate-50 border border-slate-200 rounded-xl p-3.5 space-y-2">
+                    <div class="bg-slate-50 border border-slate-200 rounded-xl p-3.5 space-y-2.5">
                         <label class="block text-xs font-semibold text-slate-700">
-                            พิมพ์ชื่อหรือรหัสนักเรียน เพื่อลงทะเบียน:
+                            ลงทะเบียนด่วน (บันทึกทั้งในเครื่องและ Supabase):
                         </label>
-                        <div class="flex gap-2">
+                        <div class="grid grid-cols-1 sm:grid-cols-12 gap-2">
                             <input
                                 id="new-student-input"
                                 type="text"
-                                placeholder="เช่น 09627 หรือ สมชาย..."
+                                placeholder="id_name เช่น 09627 หรือ สมชาย..."
                                 onkeydown="if(event.key==='Enter') captureNewFace()"
-                                class="flex-1 text-xs sm:text-sm border border-slate-300 rounded-lg px-3 py-2 bg-white focus:outline-none focus:ring-2 focus:ring-slate-900"
+                                class="sm:col-span-6 text-xs sm:text-sm border border-slate-300 rounded-lg px-3 py-2 bg-white focus:outline-none focus:ring-2 focus:ring-slate-900"
+                            />
+                            <input
+                                id="new-student-m-input"
+                                type="text"
+                                list="m-grade-options"
+                                placeholder="m (ชั้น เช่น ม.4/1)"
+                                onkeydown="if(event.key==='Enter') captureNewFace()"
+                                class="sm:col-span-3 text-xs sm:text-sm border border-slate-300 rounded-lg px-2.5 py-2 bg-white focus:outline-none focus:ring-2 focus:ring-slate-900"
                             />
                             <button
                                 onclick="captureNewFace()"
-                                class="inline-flex items-center gap-1.5 bg-slate-900 hover:bg-slate-800 text-white text-xs px-3.5 py-2 rounded-lg font-semibold transition shadow-sm whitespace-nowrap">
+                                class="sm:col-span-3 inline-flex items-center justify-center gap-1.5 bg-slate-900 hover:bg-slate-800 text-white text-xs px-3 py-2 rounded-lg font-semibold transition shadow-sm whitespace-nowrap">
                                 <!-- Lucide: Camera -->
                                 <svg class="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                                     <path d="M14.5 4h-5L7 7H4a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2h-3l-2.5-3z"/>
@@ -542,12 +557,29 @@
                                 <span>ถ่ายภาพ</span>
                             </button>
                         </div>
+                        <datalist id="m-grade-options">
+                            <option value="ม.1"></option>
+                            <option value="ม.2"></option>
+                            <option value="ม.3"></option>
+                            <option value="ม.4"></option>
+                            <option value="ม.5"></option>
+                            <option value="ม.6"></option>
+                            <option value="ม.1/1"></option>
+                            <option value="ม.2/1"></option>
+                            <option value="ม.3/1"></option>
+                            <option value="ม.4/1"></option>
+                            <option value="ม.5/1"></option>
+                            <option value="ม.6/1"></option>
+                        </datalist>
                     </div>
 
                     <!-- Registered Faces List -->
                     <div class="flex-1 flex flex-col space-y-2 min-h-[220px]">
                         <div class="flex items-center justify-between text-xs text-slate-500 px-1">
                             <span>รายชื่อที่ลงทะเบียนแล้ว (<span id="registered-faces-count">{{ vision_status.known_faces_count or 0 }}</span> คน)</span>
+                            <button onclick="switchTab('supabase')" class="text-indigo-600 hover:text-indigo-800 font-semibold">
+                                เปิดหน้าจัดการข้อมูล Supabase &rarr;
+                            </button>
                         </div>
                         <div id="registered-faces-container" class="space-y-2.5 overflow-y-auto max-h-[340px] pr-1 flex-1">
                             <!-- Populated by JavaScript -->
@@ -574,7 +606,7 @@
                             <path d="M3 12a9 9 0 0 0 9 9 9.75 9.75 0 0 0 6.74-2.74L21 16"/>
                             <path d="M16 16h5v5"/>
                         </svg>
-                        <span>ซิงค์รูปภาพจากโฟลเดอร์</span>
+                        <span>ซิงค์รูปภาพและ Supabase</span>
                     </button>
                     <button
                         onclick="confirmResetAttendance()"
@@ -586,6 +618,286 @@
                         </svg>
                         <span>รีเซ็ตผลเช็คชื่อวันนี้</span>
                     </button>
+                </div>
+            </div>
+
+        </section>
+
+
+        <!-- ============================================================ -->
+        <!-- TAB 4: ข้อมูล SUPABASE (id_name, m, array_faceshape)         -->
+        <!-- ============================================================ -->
+        <section id="view-supabase" class="space-y-6 hidden">
+
+            <!-- Header & Connection Status Bar -->
+            <div class="bg-white border border-slate-200 rounded-2xl p-5 sm:p-6 shadow-sm">
+                <div class="flex flex-col lg:flex-row lg:items-center justify-between gap-4">
+                    <div>
+                        <div class="flex flex-wrap items-center gap-2.5">
+                            <h1 class="text-xl sm:text-2xl font-bold text-slate-900 tracking-tight">
+                                ระบบเก็บข้อมูลใบหน้าด้วย Supabase
+                            </h1>
+                            <span id="sb-status-badge" class="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-xs font-semibold border {{ 'bg-emerald-50 text-emerald-700 border-emerald-200' if supabase_status and supabase_status.connected else 'bg-amber-50 text-amber-700 border-amber-200' }}">
+                                <span id="sb-status-dot" class="w-2 h-2 rounded-full {{ 'bg-emerald-500' if supabase_status and supabase_status.connected else 'bg-amber-500' }}"></span>
+                                <span id="sb-status-text">
+                                    {{ 'เชื่อมต่อ Supabase แล้ว (' + supabase_status.table_name + ')' if supabase_status and supabase_status.connected else 'รอการตั้งค่า SUPABASE_URL / SUPABASE_KEY ในโค้ด' }}
+                                </span>
+                            </span>
+                        </div>
+                        <p class="text-xs sm:text-sm text-slate-500 mt-1">
+                            เพิ่มข้อมูลลงตาราง Supabase ประกอบด้วยฟิลด์ <code class="bg-slate-100 px-1.5 py-0.5 rounded text-slate-800 font-mono text-xs">id_name</code>, <code class="bg-slate-100 px-1.5 py-0.5 rounded text-slate-800 font-mono text-xs">m</code> และ <code class="bg-slate-100 px-1.5 py-0.5 rounded text-slate-800 font-mono text-xs">array_faceshape</code>
+                        </p>
+                    </div>
+
+                    <!-- Top Action Buttons -->
+                    <div class="flex flex-wrap items-center gap-2">
+                        <button
+                            onclick="syncSupabaseData(false)"
+                            class="inline-flex items-center gap-1.5 text-xs bg-white hover:bg-slate-50 text-slate-700 border border-slate-300 px-3 py-2 rounded-xl font-semibold transition">
+                            <svg class="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                <path d="M21 12a9 9 0 0 0-9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/>
+                                <path d="M3 3v5h5"/>
+                                <path d="M3 12a9 9 0 0 0 9 9 9.75 9.75 0 0 0 6.74-2.74L21 16"/>
+                                <path d="M16 16h5v5"/>
+                            </svg>
+                            <span>ดึงข้อมูลจาก Supabase</span>
+                        </button>
+                        <button
+                            onclick="syncSupabaseData(true)"
+                            class="inline-flex items-center gap-1.5 text-xs bg-indigo-600 hover:bg-indigo-700 text-white px-3.5 py-2 rounded-xl font-semibold shadow-sm transition">
+                            <svg class="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+                                <polyline points="17 8 12 3 7 8"/>
+                                <line x1="12" x2="12" y1="3" y2="15"/>
+                            </svg>
+                            <span>ซิงค์ข้อมูลในเครื่องขึ้น Supabase</span>
+                        </button>
+                    </div>
+                </div>
+            </div>
+
+            <!-- ========================================================== -->
+            <!-- WEB FORM FOR ADDING DATA (id_name, m, array_faceshape)     -->
+            <!-- ========================================================== -->
+            <div class="grid grid-cols-1 lg:grid-cols-12 gap-6">
+
+                <!-- Left: Live Camera & Face-Shape Extraction Controls (5 cols) -->
+                <div class="lg:col-span-5 bg-white border border-slate-200 rounded-2xl p-5 shadow-sm flex flex-col justify-between space-y-4">
+                    <div class="space-y-3">
+                        <div class="flex items-center justify-between">
+                            <div>
+                                <h2 class="text-sm font-bold text-slate-800">1. ดึงค่าใบหน้า (Extract Face-Shape Array)</h2>
+                                <p class="text-xs text-slate-500">ถ่ายจากกล้องสด หรืออัปโหลดรูปภาพเพื่อแปลงเป็นเวกเตอร์ 128 มิติ</p>
+                            </div>
+                        </div>
+
+                        <!-- Live Camera Stream Preview -->
+                        <div class="rounded-xl overflow-hidden bg-slate-900 border border-slate-800 aspect-video flex items-center justify-center relative shadow-inner">
+                            <img src="/video_feed" alt="Live Camera Stream" class="w-full h-full object-contain" />
+                        </div>
+
+                        <!-- Extraction Action Buttons -->
+                        <div class="grid grid-cols-1 sm:grid-cols-2 gap-2.5 pt-1">
+                            <button
+                                type="button"
+                                onclick="extractFaceshapeFromCamera()"
+                                class="inline-flex items-center justify-center gap-2 bg-slate-900 hover:bg-slate-800 text-white text-xs font-semibold px-3.5 py-2.5 rounded-xl shadow-sm transition">
+                                <svg class="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                    <path d="M14.5 4h-5L7 7H4a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2h-3l-2.5-3z"/>
+                                    <circle cx="12" cy="13" r="3"/>
+                                </svg>
+                                <span>ดึง Array จากกล้องสด</span>
+                            </button>
+
+                            <label class="inline-flex items-center justify-center gap-2 bg-slate-100 hover:bg-slate-200 text-slate-800 border border-slate-300 text-xs font-semibold px-3.5 py-2.5 rounded-xl cursor-pointer transition">
+                                <svg class="w-4 h-4 text-slate-600" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                    <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+                                    <polyline points="17 8 12 3 7 8"/>
+                                    <line x1="12" x2="12" y1="3" y2="15"/>
+                                </svg>
+                                <span>ดึง Array จากไฟล์รูปภาพ</span>
+                                <input type="file" accept="image/*" class="hidden" onchange="extractFaceshapeFromUpload(this)" />
+                            </label>
+                        </div>
+                    </div>
+
+                    <!-- Helper Tip Box -->
+                    <div class="bg-slate-50 border border-slate-200 rounded-xl p-3 text-xs text-slate-600 space-y-1">
+                        <div class="font-semibold text-slate-800">คำแนะนำการใช้งาน:</div>
+                        <p>• กดปุ่ม <strong>"ดึง Array จากกล้องสด"</strong> เพื่อดูตัวอย่างค่า <code class="font-mono text-slate-800">array_faceshape</code> ก่อนกดบันทึก หรือกดปุ่ม <strong>"ถ่ายภาพสด + บันทึกทันที"</strong> ด้านขวามือเพื่อทำในขั้นตอนเดียว</p>
+                    </div>
+                </div>
+
+                <!-- Right: Data Entry Form (id_name, m, array_faceshape) (7 cols) -->
+                <div class="lg:col-span-7 bg-white border border-slate-200 rounded-2xl p-5 sm:p-6 shadow-sm flex flex-col justify-between space-y-4">
+                    <div class="space-y-4">
+                        <div class="flex items-center justify-between border-b border-slate-100 pb-3">
+                            <div>
+                                <h2 class="text-base font-bold text-slate-900">2. ฟอร์มเพิ่มข้อมูลลงตาราง Supabase</h2>
+                                <p class="text-xs text-slate-500">กรอกข้อมูล <code class="font-mono">id_name</code>, <code class="font-mono">m</code> และตรวจสอบ <code class="font-mono">array_faceshape</code></p>
+                            </div>
+                            <button
+                                type="button"
+                                onclick="clearSupabaseForm()"
+                                class="text-xs text-slate-500 hover:text-slate-800 px-2.5 py-1 rounded-lg border border-slate-200 hover:bg-slate-50 transition">
+                                ล้างฟอร์ม
+                            </button>
+                        </div>
+
+                        <!-- Field 1: id_name & Field 2: m -->
+                        <div class="grid grid-cols-1 sm:grid-cols-12 gap-4">
+                            <!-- id_name -->
+                            <div class="sm:col-span-7 space-y-1.5">
+                                <label for="form-id-name" class="block text-xs font-bold text-slate-800">
+                                    รหัส / ชื่อ-นามสกุล (<code class="text-indigo-600 font-mono">id_name</code>) <span class="text-rose-500">*</span>
+                                </label>
+                                <input
+                                    id="form-id-name"
+                                    type="text"
+                                    placeholder="เช่น 09627 หรือ 09627 สมชาย ใจดี"
+                                    class="w-full text-xs sm:text-sm border border-slate-300 rounded-xl px-3.5 py-2.5 bg-white text-slate-900 focus:outline-none focus:ring-2 focus:ring-slate-900"
+                                />
+                            </div>
+
+                            <!-- m (Grade / Classroom) -->
+                            <div class="sm:col-span-5 space-y-1.5">
+                                <label for="form-m" class="block text-xs font-bold text-slate-800">
+                                    ระดับชั้น / ห้องเรียน (<code class="text-indigo-600 font-mono">m</code>) <span class="text-rose-500">*</span>
+                                </label>
+                                <input
+                                    id="form-m"
+                                    type="text"
+                                    list="m-grade-options"
+                                    placeholder="เช่น ม.4 หรือ ม.4/1"
+                                    class="w-full text-xs sm:text-sm border border-slate-300 rounded-xl px-3.5 py-2.5 bg-white text-slate-900 focus:outline-none focus:ring-2 focus:ring-slate-900"
+                                />
+                            </div>
+                        </div>
+
+                        <!-- Quick Grade Chips for `m` -->
+                        <div class="flex flex-wrap items-center gap-1.5">
+                            <span class="text-[11px] text-slate-500 mr-1">เลือกชั้นด่วน (<code class="font-mono">m</code>):</span>
+                            <button type="button" onclick="setFormM('ม.1')" class="text-xs px-2.5 py-1 rounded-lg border border-slate-200 bg-slate-50 hover:bg-slate-900 hover:text-white transition font-medium">ม.1</button>
+                            <button type="button" onclick="setFormM('ม.2')" class="text-xs px-2.5 py-1 rounded-lg border border-slate-200 bg-slate-50 hover:bg-slate-900 hover:text-white transition font-medium">ม.2</button>
+                            <button type="button" onclick="setFormM('ม.3')" class="text-xs px-2.5 py-1 rounded-lg border border-slate-200 bg-slate-50 hover:bg-slate-900 hover:text-white transition font-medium">ม.3</button>
+                            <button type="button" onclick="setFormM('ม.4')" class="text-xs px-2.5 py-1 rounded-lg border border-slate-200 bg-slate-50 hover:bg-slate-900 hover:text-white transition font-medium">ม.4</button>
+                            <button type="button" onclick="setFormM('ม.5')" class="text-xs px-2.5 py-1 rounded-lg border border-slate-200 bg-slate-50 hover:bg-slate-900 hover:text-white transition font-medium">ม.5</button>
+                            <button type="button" onclick="setFormM('ม.6')" class="text-xs px-2.5 py-1 rounded-lg border border-slate-200 bg-slate-50 hover:bg-slate-900 hover:text-white transition font-medium">ม.6</button>
+                        </div>
+
+                        <!-- Field 3: array_faceshape -->
+                        <div class="space-y-1.5">
+                            <div class="flex flex-wrap items-center justify-between gap-2">
+                                <label for="form-array-faceshape" class="block text-xs font-bold text-slate-800">
+                                    ข้อมูลเวกเตอร์ใบหน้า (<code class="text-indigo-600 font-mono">array_faceshape</code>)
+                                </label>
+                                <div class="flex items-center gap-2">
+                                    <span id="form-array-status" class="text-[11px] font-semibold px-2 py-0.5 rounded-md bg-slate-100 text-slate-600 border border-slate-200">
+                                        ยังไม่ได้ดึงค่า (หรือกดถ่ายพร้อมบันทึกได้ทันที)
+                                    </span>
+                                    <button
+                                        type="button"
+                                        onclick="copyFormFaceshape()"
+                                        class="text-[11px] text-slate-600 hover:text-slate-900 px-2 py-0.5 rounded border border-slate-200 bg-white">
+                                        คัดลอก JSON
+                                    </button>
+                                </div>
+                            </div>
+                            <textarea
+                                id="form-array-faceshape"
+                                rows="4"
+                                oninput="validateFaceshapeTextarea()"
+                                placeholder="[-0.146153, 0.081491, 0.058699, ... (เวกเตอร์ 128 มิติ จะปรากฏที่นี่เมื่อกดดึง Array จากกล้อง/รูปภาพ หรือวาง JSON ได้โดยตรง)]"
+                                class="w-full text-xs font-mono border border-slate-300 rounded-xl p-3 bg-slate-50 text-slate-800 focus:bg-white focus:outline-none focus:ring-2 focus:ring-slate-900"
+                            ></textarea>
+                        </div>
+
+                        <!-- Append Sample Option -->
+                        <div class="flex items-center justify-between pt-1">
+                            <label class="inline-flex items-center gap-2 text-xs text-slate-700 cursor-pointer select-none">
+                                <input
+                                    id="form-append-sample"
+                                    type="checkbox"
+                                    checked
+                                    class="rounded border-slate-300 text-slate-900 focus:ring-slate-900 w-4 h-4"
+                                />
+                                <span>หากมี <code class="font-mono font-semibold">id_name</code> นี้อยู่แล้ว ให้เพิ่มตัวอย่างใบหน้าต่อท้าย (Append Sample)</span>
+                            </label>
+                        </div>
+                    </div>
+
+                    <!-- Submit Buttons -->
+                    <div class="pt-4 border-t border-slate-100 grid grid-cols-1 sm:grid-cols-2 gap-3">
+                        <button
+                            type="button"
+                            onclick="submitSupabaseRecord(false)"
+                            class="inline-flex items-center justify-center gap-2 bg-slate-900 hover:bg-slate-800 text-white text-xs sm:text-sm font-semibold px-4 py-3 rounded-xl shadow-sm transition">
+                            <svg class="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                <path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/>
+                                <polyline points="17 21 17 13 7 13 7 21"/>
+                                <polyline points="7 3 7 8 15 8"/>
+                            </svg>
+                            <span>บันทึกข้อมูลลง Supabase</span>
+                        </button>
+
+                        <button
+                            type="button"
+                            onclick="submitSupabaseRecord(true)"
+                            class="inline-flex items-center justify-center gap-2 bg-emerald-600 hover:bg-emerald-700 text-white text-xs sm:text-sm font-semibold px-4 py-3 rounded-xl shadow-sm transition">
+                            <svg class="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                <path d="M14.5 4h-5L7 7H4a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2h-3l-2.5-3z"/>
+                                <circle cx="12" cy="13" r="3"/>
+                            </svg>
+                            <span>ถ่ายภาพสด + บันทึกทันที</span>
+                        </button>
+                    </div>
+                </div>
+
+            </div>
+
+            <!-- ========================================================== -->
+            <!-- SUPABASE DATA TABLE (id_name, m, array_faceshape)          -->
+            <!-- ========================================================== -->
+            <div class="bg-white border border-slate-200 rounded-2xl shadow-sm overflow-hidden">
+                <div class="p-5 border-b border-slate-200 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                    <div>
+                        <h2 class="text-base font-bold text-slate-900">
+                            รายการข้อมูลในตาราง (<span id="sb-records-count">0</span> รายการ)
+                        </h2>
+                        <p class="text-xs text-slate-500">แสดงข้อมูล <code class="font-mono">id_name</code>, <code class="font-mono">m</code> และ <code class="font-mono">array_faceshape</code> ทั้งหมดที่ซิงค์ในระบบ</p>
+                    </div>
+
+                    <div class="flex items-center gap-2">
+                        <input
+                            id="sb-search-input"
+                            type="text"
+                            oninput="renderSupabaseRecordsTable()"
+                            placeholder="ค้นหา id_name หรือ ชั้น m..."
+                            class="text-xs sm:text-sm border border-slate-300 rounded-xl px-3.5 py-2 bg-slate-50 focus:bg-white focus:outline-none focus:ring-2 focus:ring-slate-900 w-full sm:w-64"
+                        />
+                        <button
+                            onclick="loadSupabaseRecords()"
+                            class="text-xs bg-slate-100 hover:bg-slate-200 text-slate-700 border border-slate-300 px-3 py-2 rounded-xl font-medium transition whitespace-nowrap">
+                            รีเฟรชตาราง
+                        </button>
+                    </div>
+                </div>
+
+                <div class="overflow-x-auto">
+                    <table class="w-full text-left border-collapse">
+                        <thead>
+                            <tr class="bg-slate-50 border-b border-slate-200 text-xs font-semibold text-slate-500 uppercase tracking-wider">
+                                <th class="py-3 px-4">id_name (รหัส / ชื่อ)</th>
+                                <th class="py-3 px-4">m (ระดับชั้น)</th>
+                                <th class="py-3 px-4">array_faceshape (เวกเตอร์ 128 มิติ)</th>
+                                <th class="py-3 px-4">สถานะซิงค์</th>
+                                <th class="py-3 px-4 text-right">การจัดการ</th>
+                            </tr>
+                        </thead>
+                        <tbody id="sb-records-tbody" class="divide-y divide-slate-100 text-xs sm:text-sm">
+                            <!-- Populated by JavaScript -->
+                        </tbody>
+                    </table>
                 </div>
             </div>
 
@@ -610,6 +922,8 @@
         let cachedRoster = [];
         let cachedVision = {};
         let cachedMetrics = {};
+        let cachedSupabase = {};
+        let cachedSupabaseRecords = [];
 
         // Circumference for SVG Donut Chart (radius = 60)
         const DONUT_CIRCUMFERENCE = 2 * Math.PI * 60; // 376.9911
@@ -622,6 +936,8 @@
             camera: '<svg class="w-3.5 h-3.5 inline-block mr-1" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14.5 4h-5L7 7H4a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2h-3l-2.5-3z"/><circle cx="12" cy="13" r="3"/></svg>',
             upload: '<svg class="w-3.5 h-3.5 text-slate-600" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" x2="12" y1="3" y2="15"/></svg>',
             trash: '<svg class="w-3.5 h-3.5 text-rose-600" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"/><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/><line x1="10" x2="10" y1="11" y2="17"/><line x1="14" x2="14" y1="11" y2="17"/></svg>',
+            edit: '<svg class="w-3.5 h-3.5 text-indigo-600" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/></svg>',
+            copy: '<svg class="w-3.5 h-3.5 text-slate-600" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="14" height="14" x="8" y="8" rx="2" ry="2"/><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"/></svg>',
             toastSuccess: '<svg class="w-4 h-4 text-emerald-400" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="m9 12 2 2 4-4"/></svg>',
             toastError: '<svg class="w-4 h-4 text-rose-400" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" x2="12" y1="8" y2="12"/><line x1="12" x2="12.01" y1="16" y2="16"/></svg>'
         };
@@ -629,7 +945,7 @@
         // Initialize Tab from URL Hash
         function initTabFromHash() {
             const hash = window.location.hash.replace('#', '').toLowerCase();
-            if (['dashboard', 'attendance', 'camera'].includes(hash)) {
+            if (['dashboard', 'attendance', 'camera', 'supabase'].includes(hash)) {
                 switchTab(hash);
             } else {
                 switchTab('dashboard');
@@ -641,22 +957,27 @@
             currentTab = tabId;
             window.location.hash = tabId;
 
-            const tabs = ['dashboard', 'attendance', 'camera'];
+            const tabs = ['dashboard', 'attendance', 'camera', 'supabase'];
             tabs.forEach(t => {
                 const viewEl = document.getElementById(`view-${t}`);
                 const btnEl = document.getElementById(`tab-btn-${t}`);
+                const extraFlex = t === 'supabase' ? ' inline-flex items-center gap-1.5' : '';
                 if (t === tabId) {
                     if (viewEl) viewEl.classList.remove('hidden');
                     if (btnEl) {
-                        btnEl.className = 'px-3 sm:px-4 py-1.5 rounded-lg transition-all text-slate-900 bg-white shadow-sm font-semibold';
+                        btnEl.className = `px-3 sm:px-4 py-1.5 rounded-lg transition-all text-slate-900 bg-white shadow-sm font-semibold whitespace-nowrap${extraFlex}`;
                     }
                 } else {
                     if (viewEl) viewEl.classList.add('hidden');
                     if (btnEl) {
-                        btnEl.className = 'px-3 sm:px-4 py-1.5 rounded-lg transition-all text-slate-600 hover:text-slate-900';
+                        btnEl.className = `px-3 sm:px-4 py-1.5 rounded-lg transition-all text-slate-600 hover:text-slate-900 whitespace-nowrap${extraFlex}`;
                     }
                 }
             });
+
+            if (tabId === 'supabase') {
+                loadSupabaseRecords();
+            }
         }
 
         // Toast Notification System (Using Lucide SVG Icons)
@@ -1000,6 +1321,8 @@
                 const safeSid = sid.replace(/'/g, "\\'");
                 const info = previews[sid] || {};
                 const picsCount = info.saved_pics || 0;
+                const samplesCount = info.samples || 0;
+                const mVal = info.m || '-';
 
                 return `
                     <div class="flex items-center justify-between p-2.5 rounded-xl border border-slate-200 bg-white hover:border-slate-300 transition gap-3">
@@ -1015,13 +1338,18 @@
                         </div>
 
                         <div class="min-w-0 flex-1">
-                            <span class="font-mono text-xs font-bold text-slate-800">${sid}</span>
-                            <p class="text-[11px] text-slate-500">บันทึกแล้ว ${picsCount} ภาพ</p>
+                            <div class="flex items-center gap-1.5 flex-wrap">
+                                <span class="font-mono text-xs font-bold text-slate-800">${sid}</span>
+                                <span class="text-[10px] font-semibold px-1.5 py-0.5 rounded bg-indigo-50 text-indigo-700 border border-indigo-200">
+                                    m: ${mVal}
+                                </span>
+                            </div>
+                            <p class="text-[11px] text-slate-500">${samplesCount} array_faceshape • ${picsCount} ภาพ</p>
                         </div>
 
                         <div class="flex items-center gap-1.5 flex-shrink-0">
                             <button
-                                onclick="captureFace('${safeSid}')"
+                                onclick="captureFace('${safeSid}', '${mVal.replace(/'/g, "\\'")}')"
                                 class="inline-flex items-center text-xs bg-slate-100 hover:bg-slate-200 text-slate-700 px-2 py-1 rounded-lg font-medium transition"
                                 title="ถ่ายภาพเพิ่ม">
                                 ${SVG_ICONS.camera} ถ่ายเพิ่ม
@@ -1030,7 +1358,7 @@
                                 class="inline-flex items-center justify-center text-xs bg-slate-100 hover:bg-slate-200 text-slate-700 w-7 h-7 rounded-lg font-medium cursor-pointer transition"
                                 title="อัปโหลดรูปภาพ">
                                 ${SVG_ICONS.upload}
-                                <input type="file" accept="image/*" class="hidden" onchange="uploadStudentPhoto('${safeSid}', this)" />
+                                <input type="file" accept="image/*" class="hidden" onchange="uploadStudentPhoto('${safeSid}', this, '${mVal.replace(/'/g, "\\'")}')" />
                             </label>
                             <button
                                 onclick="deleteStudentFace('${safeSid}')"
@@ -1050,25 +1378,29 @@
 
         async function captureNewFace() {
             const input = document.getElementById('new-student-input');
+            const mInput = document.getElementById('new-student-m-input');
             const studentId = (input.value || '').trim();
+            const mVal = ((mInput && mInput.value) || '').trim() || '-';
             if (!studentId) {
-                showToast('กรุณากรอกชื่อหรือรหัสนักเรียนก่อน', true);
+                showToast('กรุณากรอก id_name (ชื่อหรือรหัสนักเรียน) ก่อน', true);
                 input.focus();
                 return;
             }
-            await captureFace(studentId);
+            await captureFace(studentId, mVal);
             input.value = '';
         }
 
-        async function captureFace(studentId) {
+        async function captureFace(studentId, mVal = '-') {
             showToast(`กำลังถ่ายภาพใบหน้า "${studentId}"...`);
             try {
-                const res = await fetch(`/api/register-face/${encodeURIComponent(studentId)}`, { method: 'POST' });
+                const url = `/api/register-face/${encodeURIComponent(studentId)}?m=${encodeURIComponent(mVal || '-')}`;
+                const res = await fetch(url, { method: 'POST' });
                 const data = await res.json();
                 if (res.ok && data.success) {
                     picCacheBuster = Date.now();
-                    showToast(`ถ่ายภาพและบันทึกข้อมูลใบหน้า "${studentId}" สำเร็จ!`);
+                    showToast(data.message || `ถ่ายภาพและบันทึก "${studentId}" สำเร็จ!`);
                     await pollDashboard();
+                    if (currentTab === 'supabase') await loadSupabaseRecords();
                 } else {
                     showToast(data.message || 'ไม่พบใบหน้าในกล้อง กรุณามองตรงที่กล้อง', true);
                 }
@@ -1077,22 +1409,24 @@
             }
         }
 
-        async function uploadStudentPhoto(studentId, inputEl) {
+        async function uploadStudentPhoto(studentId, inputEl, mVal = '-') {
             if (!inputEl.files || !inputEl.files[0]) return;
             const formData = new FormData();
             formData.append('file', inputEl.files[0]);
+            formData.append('m', mVal || '-');
 
             showToast(`กำลังอัปโหลดรูปภาพของ "${studentId}"...`);
             try {
-                const res = await fetch(`/api/upload-face/${encodeURIComponent(studentId)}`, {
+                const res = await fetch(`/api/upload-face/${encodeURIComponent(studentId)}?m=${encodeURIComponent(mVal || '-')}`, {
                     method: 'POST',
                     body: formData
                 });
                 const data = await res.json();
                 if (res.ok && data.success) {
                     picCacheBuster = Date.now();
-                    showToast(`อัปโหลดรูปภาพของ "${studentId}" สำเร็จ!`);
+                    showToast(data.message || `อัปโหลดรูปภาพของ "${studentId}" สำเร็จ!`);
                     await pollDashboard();
+                    if (currentTab === 'supabase') await loadSupabaseRecords();
                 } else {
                     showToast(data.message || 'ไม่พบใบหน้าในรูปภาพที่อัปโหลด', true);
                 }
@@ -1110,6 +1444,7 @@
                 if (res.ok && data.success) {
                     showToast(`ลบข้อมูลของ "${studentId}" เรียบร้อยแล้ว`);
                     await pollDashboard();
+                    if (currentTab === 'supabase') await loadSupabaseRecords();
                 } else {
                     showToast(data.message || 'ไม่สามารถลบข้อมูลได้', true);
                 }
@@ -1137,13 +1472,14 @@
         }
 
         async function syncFolderNow() {
-            showToast('กำลังนำเข้าและประมวลผลรูปภาพทั้งหมด...');
+            showToast('กำลังนำเข้าและประมวลผลรูปภาพและซิงค์ข้อมูล...');
             try {
                 const res = await fetch('/api/sync-now', { method: 'POST' });
                 if (res.ok) {
                     picCacheBuster = Date.now();
                     showToast('ซิงค์ข้อมูลรูปภาพและทะเบียนรายชื่อเรียบร้อย!');
                     await pollDashboard();
+                    if (currentTab === 'supabase') await loadSupabaseRecords();
                 }
             } catch (err) {
                 showToast('เกิดข้อผิดพลาดในการซิงค์ข้อมูล', true);
@@ -1160,6 +1496,389 @@
                 }
             } catch (err) {
                 showToast('เกิดข้อผิดพลาดในการรีเซ็ตผลการเช็คชื่อ', true);
+            }
+        }
+
+        // ============================================================
+        // SUPABASE DATA COLLECTION FUNCTIONS (id_name, m, array_faceshape)
+        // ============================================================
+
+        function updateSupabaseStatusUI(sbStatus) {
+            if (!sbStatus) return;
+            cachedSupabase = sbStatus;
+
+            const badge = document.getElementById('sb-status-badge');
+            const dot = document.getElementById('sb-status-dot');
+            const text = document.getElementById('sb-status-text');
+            const navDot = document.getElementById('nav-sb-dot');
+
+            if (sbStatus.connected) {
+                if (badge) badge.className = 'inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-xs font-semibold border bg-emerald-50 text-emerald-700 border-emerald-200';
+                if (dot) dot.className = 'w-2 h-2 rounded-full bg-emerald-500';
+                if (text) text.textContent = `เชื่อมต่อ Supabase แล้ว (${sbStatus.table_name || 'face_data'})`;
+                if (navDot) navDot.className = 'w-2 h-2 rounded-full bg-emerald-500';
+            } else {
+                if (badge) badge.className = 'inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-xs font-semibold border bg-amber-50 text-amber-700 border-amber-200';
+                if (dot) dot.className = 'w-2 h-2 rounded-full bg-amber-500';
+                if (text) text.textContent = sbStatus.configured ? 'เชื่อมต่อ Supabase ขัดข้อง' : 'รอการตั้งค่า SUPABASE_URL / SUPABASE_KEY ในโค้ด';
+                if (navDot) navDot.className = 'w-2 h-2 rounded-full bg-amber-400';
+            }
+        }
+
+        function setFormM(val) {
+            const mEl = document.getElementById('form-m');
+            if (mEl) mEl.value = val;
+        }
+
+        function clearSupabaseForm() {
+            const idEl = document.getElementById('form-id-name');
+            const mEl = document.getElementById('form-m');
+            const arrEl = document.getElementById('form-array-faceshape');
+            if (idEl) idEl.value = '';
+            if (mEl) mEl.value = '';
+            if (arrEl) arrEl.value = '';
+            validateFaceshapeTextarea();
+        }
+
+        function validateFaceshapeTextarea() {
+            const arrEl = document.getElementById('form-array-faceshape');
+            const statusEl = document.getElementById('form-array-status');
+            if (!arrEl || !statusEl) return null;
+
+            const raw = (arrEl.value || '').trim();
+            if (!raw) {
+                statusEl.textContent = 'ยังไม่ได้ดึงค่า (หรือกดถ่ายพร้อมบันทึกได้ทันที)';
+                statusEl.className = 'text-[11px] font-semibold px-2 py-0.5 rounded-md bg-slate-100 text-slate-600 border border-slate-200';
+                return null;
+            }
+
+            try {
+                const parsed = JSON.parse(raw);
+                if (Array.isArray(parsed) && parsed.length >= 128 && typeof parsed[0] === 'number') {
+                    statusEl.textContent = `พร้อมบันทึก: 1 ตัวอย่าง (${parsed.length} มิติ)`;
+                    statusEl.className = 'text-[11px] font-semibold px-2 py-0.5 rounded-md bg-emerald-50 text-emerald-700 border border-emerald-200';
+                    return parsed;
+                }
+                if (Array.isArray(parsed) && parsed.length > 0 && Array.isArray(parsed[0]) && parsed[0].length >= 128) {
+                    statusEl.textContent = `พร้อมบันทึก: ${parsed.length} ตัวอย่าง (${parsed[0].length} มิติ/ตัวอย่าง)`;
+                    statusEl.className = 'text-[11px] font-semibold px-2 py-0.5 rounded-md bg-emerald-50 text-emerald-700 border border-emerald-200';
+                    return parsed;
+                }
+                statusEl.textContent = 'รูปแบบ Array ไม่ครบ 128 มิติ';
+                statusEl.className = 'text-[11px] font-semibold px-2 py-0.5 rounded-md bg-rose-50 text-rose-700 border border-rose-200';
+                return null;
+            } catch (e) {
+                statusEl.textContent = 'รูปแบบ JSON ไม่ถูกต้อง';
+                statusEl.className = 'text-[11px] font-semibold px-2 py-0.5 rounded-md bg-rose-50 text-rose-700 border border-rose-200';
+                return null;
+            }
+        }
+
+        function copyFormFaceshape() {
+            const arrEl = document.getElementById('form-array-faceshape');
+            if (!arrEl || !arrEl.value.trim()) {
+                showToast('ยังไม่มีค่า array_faceshape ให้คัดลอก', true);
+                return;
+            }
+            navigator.clipboard.writeText(arrEl.value.trim());
+            showToast('คัดลอกค่า array_faceshape ไปยังคลิปบอร์ดแล้ว!');
+        }
+
+        async function extractFaceshapeFromCamera() {
+            showToast('กำลังสกัดค่า array_faceshape (128 มิติ) จากกล้องสด...');
+            try {
+                const res = await fetch('/api/extract-faceshape/camera', { method: 'POST' });
+                const data = await res.json();
+                if (res.ok && data.success && data.array_faceshape) {
+                    const arrEl = document.getElementById('form-array-faceshape');
+                    if (arrEl) {
+                        arrEl.value = JSON.stringify(data.array_faceshape);
+                        validateFaceshapeTextarea();
+                    }
+                    showToast(data.message || 'ดึงค่า array_faceshape จากกล้องสดสำเร็จ!');
+                } else {
+                    showToast(data.message || 'ไม่พบใบหน้าในกล้องสด กรุณามองตรงที่กล้อง', true);
+                }
+            } catch (err) {
+                showToast('เกิดข้อผิดพลาดในการดึงค่าจากกล้อง', true);
+            }
+        }
+
+        async function extractFaceshapeFromUpload(inputEl) {
+            if (!inputEl.files || !inputEl.files[0]) return;
+            const formData = new FormData();
+            formData.append('file', inputEl.files[0]);
+
+            showToast('กำลังสกัดค่า array_faceshape จากไฟล์รูปภาพ...');
+            try {
+                const res = await fetch('/api/extract-faceshape/upload', {
+                    method: 'POST',
+                    body: formData
+                });
+                const data = await res.json();
+                if (res.ok && data.success && data.array_faceshape) {
+                    const arrEl = document.getElementById('form-array-faceshape');
+                    if (arrEl) {
+                        arrEl.value = JSON.stringify(data.array_faceshape);
+                        validateFaceshapeTextarea();
+                    }
+                    showToast(data.message || 'สกัดค่า array_faceshape จากรูปภาพสำเร็จ!');
+                } else {
+                    showToast(data.message || 'ไม่พบใบหน้าในรูปภาพที่เลือก', true);
+                }
+            } catch (err) {
+                showToast('เกิดข้อผิดพลาดในการสกัดค่าใบหน้าจากรูปภาพ', true);
+            } finally {
+                inputEl.value = '';
+            }
+        }
+
+        async function submitSupabaseRecord(captureDirect = false) {
+            const idEl = document.getElementById('form-id-name');
+            const mEl = document.getElementById('form-m');
+            const arrEl = document.getElementById('form-array-faceshape');
+            const appendEl = document.getElementById('form-append-sample');
+
+            const idName = (idEl ? idEl.value : '').trim();
+            const mVal = (mEl ? mEl.value : '').trim() || '-';
+            const appendSample = appendEl ? appendEl.checked : true;
+
+            if (!idName) {
+                showToast('กรุณากรอก id_name (รหัสหรือชื่อนักเรียน)', true);
+                if (idEl) idEl.focus();
+                return;
+            }
+
+            let parsedArray = null;
+            if (!captureDirect) {
+                parsedArray = validateFaceshapeTextarea();
+                if (!parsedArray) {
+                    showToast('กรุณาดึงค่า array_faceshape จากกล้อง/รูปภาพ หรือวาง JSON Array 128 มิติก่อนบันทึก', true);
+                    return;
+                }
+            }
+
+            showToast(captureDirect ? `กำลังถ่ายภาพสดและบันทึก "${idName}"...` : `กำลังบันทึกข้อมูล "${idName}" ลงระบบและ Supabase...`);
+            try {
+                const res = await fetch('/api/supabase/records', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        id_name: idName,
+                        m: mVal,
+                        array_faceshape: parsedArray,
+                        append_sample: appendSample,
+                        capture_from_camera: captureDirect
+                    })
+                });
+                const data = await res.json();
+                if (data.supabase) updateSupabaseStatusUI(data.supabase);
+
+                if (res.ok && data.success) {
+                    picCacheBuster = Date.now();
+                    showToast(data.message || `บันทึกข้อมูล "${idName}" สำเร็จ!`);
+                    if (arrEl) arrEl.value = '';
+                    validateFaceshapeTextarea();
+                    await loadSupabaseRecords();
+                    await pollDashboard();
+                } else {
+                    showToast(data.message || 'ไม่สามารถบันทึกข้อมูลได้', true);
+                }
+            } catch (err) {
+                showToast('เกิดข้อผิดพลาดในการเชื่อมต่อเพื่อบันทึกข้อมูล', true);
+            }
+        }
+
+        async function loadSupabaseRecords() {
+            try {
+                const res = await fetch('/api/supabase/records');
+                if (!res.ok) return;
+                const data = await res.json();
+                if (data.supabase) updateSupabaseStatusUI(data.supabase);
+                cachedSupabaseRecords = data.records || [];
+                renderSupabaseRecordsTable();
+            } catch (err) {
+                console.error('Failed to load Supabase records:', err);
+            }
+        }
+
+        function renderSupabaseRecordsTable() {
+            const tbody = document.getElementById('sb-records-tbody');
+            const countEl = document.getElementById('sb-records-count');
+            const searchEl = document.getElementById('sb-search-input');
+            if (!tbody) return;
+
+            const q = (searchEl ? searchEl.value : '').trim().toLowerCase();
+            let list = cachedSupabaseRecords.slice();
+            if (q) {
+                list = list.filter(r => {
+                    const idStr = (r.id_name || '').toLowerCase();
+                    const mStr = (r.m || '').toLowerCase();
+                    return idStr.includes(q) || mStr.includes(q);
+                });
+            }
+
+            if (countEl) countEl.textContent = list.length;
+
+            if (list.length === 0) {
+                tbody.innerHTML = `
+                    <tr>
+                        <td colspan="5" class="py-10 text-center text-slate-400 text-xs sm:text-sm">
+                            ยังไม่มีข้อมูลในตาราง — สามารถเพิ่มข้อมูลจากฟอร์มด้านบนได้เลย
+                        </td>
+                    </tr>
+                `;
+                return;
+            }
+
+            tbody.innerHTML = list.map(rec => {
+                const safeId = (rec.id_name || '').replace(/'/g, "\\'");
+                const mVal = rec.m || '-';
+                const samplesCount = rec.samples_count || 0;
+                const dims = rec.dims || 128;
+                const preview = rec.preview || '[]';
+
+                const syncBadge = rec.synced_supabase
+                    ? `<span class="inline-flex items-center text-[11px] font-semibold px-2.5 py-0.5 rounded-full bg-emerald-50 text-emerald-700 border border-emerald-200">${SVG_ICONS.check} ซิงค์ Supabase แล้ว</span>`
+                    : `<span class="inline-flex items-center text-[11px] font-semibold px-2.5 py-0.5 rounded-full bg-amber-50 text-amber-700 border border-amber-200">เก็บในเครื่อง (รอซิงค์)</span>`;
+
+                return `
+                    <tr class="hover:bg-slate-50/80 transition">
+                        <td class="py-3 px-4">
+                            <div class="flex items-center gap-2.5">
+                                <div class="w-9 h-9 rounded-lg bg-slate-100 border border-slate-200 overflow-hidden flex-shrink-0 flex items-center justify-center">
+                                    <img
+                                        src="/student_pic/${encodeURIComponent(rec.id_name)}?t=${picCacheBuster}"
+                                        onerror="this.style.display='none'; this.nextElementSibling.style.display='flex';"
+                                        class="w-full h-full object-cover"
+                                    />
+                                    <div class="hidden w-full h-full items-center justify-center text-[9px] text-slate-400 font-mono">
+                                        ${rec.id_name}
+                                    </div>
+                                </div>
+                                <span class="font-mono font-bold text-slate-900">${rec.id_name}</span>
+                            </div>
+                        </td>
+                        <td class="py-3 px-4">
+                            <span class="inline-flex items-center px-2.5 py-0.5 rounded-lg text-xs font-bold bg-indigo-50 text-indigo-700 border border-indigo-200">
+                                ${mVal}
+                            </span>
+                        </td>
+                        <td class="py-3 px-4">
+                            <div class="flex flex-col gap-0.5">
+                                <div class="flex items-center gap-1.5">
+                                    <span class="text-[11px] font-semibold text-slate-700">${samplesCount} ตัวอย่าง (${dims} มิติ)</span>
+                                    <button
+                                        onclick="copyRecordFaceshape('${safeId}')"
+                                        class="text-[11px] text-indigo-600 hover:text-indigo-800 underline"
+                                        title="คัดลอก JSON array_faceshape">
+                                        คัดลอก Array
+                                    </button>
+                                </div>
+                                <code class="text-[11px] text-slate-500 font-mono">${preview}</code>
+                            </div>
+                        </td>
+                        <td class="py-3 px-4">
+                            ${syncBadge}
+                        </td>
+                        <td class="py-3 px-4 text-right">
+                            <div class="inline-flex items-center gap-1.5">
+                                <button
+                                    onclick="editRecordInForm('${safeId}')"
+                                    class="inline-flex items-center gap-1 text-xs bg-slate-100 hover:bg-slate-200 text-slate-700 px-2.5 py-1.5 rounded-lg font-medium transition"
+                                    title="นำข้อมูลขึ้นไปแก้ไขในฟอร์ม">
+                                    ${SVG_ICONS.edit} แก้ไข
+                                </button>
+                                <button
+                                    onclick="captureFace('${safeId}', '${mVal.replace(/'/g, "\\'")}')"
+                                    class="inline-flex items-center gap-1 text-xs bg-slate-100 hover:bg-slate-200 text-slate-700 px-2.5 py-1.5 rounded-lg font-medium transition"
+                                    title="ถ่ายภาพใบหน้าเพิ่ม">
+                                    ${SVG_ICONS.camera} ถ่ายเพิ่ม
+                                </button>
+                                <button
+                                    onclick="deleteSupabaseRecord('${safeId}')"
+                                    class="inline-flex items-center justify-center bg-rose-50 hover:bg-rose-100 text-rose-600 w-7 h-7 rounded-lg transition"
+                                    title="ลบข้อมูล">
+                                    ${SVG_ICONS.trash}
+                                </button>
+                            </div>
+                        </td>
+                    </tr>
+                `;
+            }).join('');
+        }
+
+        function editRecordInForm(idName) {
+            const rec = cachedSupabaseRecords.find(r => r.id_name === idName);
+            if (!rec) return;
+
+            const idEl = document.getElementById('form-id-name');
+            const mEl = document.getElementById('form-m');
+            const arrEl = document.getElementById('form-array-faceshape');
+            const appendEl = document.getElementById('form-append-sample');
+
+            if (idEl) idEl.value = rec.id_name || '';
+            if (mEl) mEl.value = rec.m && rec.m !== '-' ? rec.m : '';
+            if (arrEl && rec.array_faceshape) {
+                arrEl.value = JSON.stringify(rec.array_faceshape);
+                validateFaceshapeTextarea();
+            }
+            if (appendEl) appendEl.checked = false;
+
+            window.scrollTo({ top: 0, behavior: 'smooth' });
+            showToast(`โหลดข้อมูลของ "${idName}" ขึ้นฟอร์มแก้ไขแล้ว`);
+        }
+
+        function copyRecordFaceshape(idName) {
+            const rec = cachedSupabaseRecords.find(r => r.id_name === idName);
+            if (!rec || !rec.array_faceshape) {
+                showToast('ไม่พบข้อมูล array_faceshape', true);
+                return;
+            }
+            navigator.clipboard.writeText(JSON.stringify(rec.array_faceshape));
+            showToast(`คัดลอก array_faceshape ของ "${idName}" สำเร็จ!`);
+        }
+
+        async function deleteSupabaseRecord(idName) {
+            if (!confirm(`ยืนยันการลบข้อมูล "${idName}" ออกจากทั้ง Supabase และในเครื่องใช่หรือไม่?`)) return;
+            try {
+                const res = await fetch(`/api/supabase/records/${encodeURIComponent(idName)}`, { method: 'DELETE' });
+                const data = await res.json();
+                if (res.ok && data.success) {
+                    showToast(data.message || `ลบข้อมูล "${idName}" เรียบร้อย`);
+                    await loadSupabaseRecords();
+                    await pollDashboard();
+                } else {
+                    showToast(data.message || 'ไม่สามารถลบข้อมูลได้', true);
+                }
+            } catch (err) {
+                showToast('เกิดข้อผิดพลาดในการลบข้อมูล', true);
+            }
+        }
+
+        async function syncSupabaseData(pushLocal = false) {
+            showToast(pushLocal ? 'กำลังอัปโหลดข้อมูลในเครื่องขึ้น Supabase...' : 'กำลังดึงและซิงค์ข้อมูลจาก Supabase...');
+            try {
+                const res = await fetch('/api/supabase/sync', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ push_local: pushLocal })
+                });
+                const data = await res.json();
+                if (data.supabase) updateSupabaseStatusUI(data.supabase);
+                if (res.ok && data.success) {
+                    showToast(data.message || 'ซิงค์ข้อมูลกับ Supabase สำเร็จ!');
+                    await loadSupabaseRecords();
+                    await pollDashboard();
+                } else {
+                    showToast(data.message || 'ยังไม่ได้ตั้งค่าการเชื่อมต่อ Supabase', true);
+                    const panel = document.getElementById('sb-config-panel');
+                    if (panel && panel.classList.contains('hidden')) {
+                        panel.classList.remove('hidden');
+                    }
+                }
+            } catch (err) {
+                showToast('เกิดข้อผิดพลาดในการซิงค์ข้อมูลกับ Supabase', true);
             }
         }
 
@@ -1181,6 +1900,9 @@
                 cachedMetrics = data;
                 cachedRoster = data.roster || [];
                 cachedVision = data.vision || {};
+                if (data.supabase) {
+                    updateSupabaseStatusUI(data.supabase);
+                }
 
                 // 1. Update Metric Cards
                 const total = Number(data.total_students) || 0;
@@ -1280,6 +2002,7 @@
             initTabFromHash();
             window.addEventListener('hashchange', initTabFromHash);
             pollDashboard();
+            loadSupabaseRecords();
             // Single polling loop every 1.5 seconds
             setInterval(pollDashboard, 1500);
         });

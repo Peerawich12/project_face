@@ -11,10 +11,13 @@ from typing import Dict, List, Optional, Set
 import pandas as pd
 from apscheduler.schedulers.background import BackgroundScheduler
 
+from supabase_sync import supabase_manager
+
 logger = logging.getLogger("school_attendance.data_sync")
 
 EXCEL_FILE_PATH = Path("students.xlsx")
 FACE_DATA_PATH = Path("face_data.json")
+FACE_META_PATH = Path("face_meta.json")
 ATTENDANCE_LOG_PATH = Path("attendance_today.json")
 
 # Excused / sick leave keywords (English & Thai)
@@ -42,14 +45,21 @@ class AttendanceStore:
         excel_path: Path = EXCEL_FILE_PATH,
         attendance_log_path: Path = ATTENDANCE_LOG_PATH,
         face_data_path: Path = FACE_DATA_PATH,
+        face_meta_path: Optional[Path] = None,
     ) -> None:
         self.excel_path = excel_path
         self.attendance_log_path = attendance_log_path
         self.face_data_path = face_data_path
+        self.face_meta_path = face_meta_path or (
+            FACE_META_PATH if face_data_path == FACE_DATA_PATH else face_data_path.parent / "face_meta.json"
+        )
+        self._is_default_store = face_data_path == FACE_DATA_PATH
         self._lock = threading.RLock()
 
         # student_id -> dict(student_id, full_name, classroom, leave_status, is_excused)
         self._roster: Dict[str, dict] = {}
+        # student_id -> dict(m, full_name) persisted locally
+        self._meta: Dict[str, dict] = {}
         # student_id -> HH:MM:SS timestamp string of first verification today
         self._present_today: Dict[str, str] = {}
         self._current_date: str = date.today().isoformat()
@@ -58,6 +68,7 @@ class AttendanceStore:
         self.sync_interval_seconds: int = 60
 
         self._scheduler: Optional[BackgroundScheduler] = None
+        self._load_face_meta()
         self._load_attendance_log()
         self.sync_from_face_data()
 
@@ -93,6 +104,36 @@ class AttendanceStore:
         except Exception as exc:
             logger.warning("Failed to persist attendance log: %s", exc)
 
+    def _load_face_meta(self) -> None:
+        with self._lock:
+            if not self.face_meta_path.exists():
+                return
+            try:
+                data = json.loads(self.face_meta_path.read_text(encoding="utf-8"))
+                if isinstance(data, dict):
+                    self._meta = data
+            except Exception as exc:
+                logger.debug("Could not load face_meta.json: %s", exc)
+
+    def _save_face_meta(self) -> None:
+        try:
+            self.face_meta_path.write_text(
+                json.dumps(self._meta, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+        except Exception as exc:
+            logger.debug("Could not save face_meta.json: %s", exc)
+
+    def get_person_m(self, student_id: str) -> str:
+        """Return the grade/classroom `m` for `student_id`."""
+        sid = str(student_id).strip()
+        with self._lock:
+            if sid in self._roster and self._roster[sid].get("classroom") not in (None, "", "-"):
+                return str(self._roster[sid]["classroom"])
+            if sid in self._meta and self._meta[sid].get("m") not in (None, "", "-"):
+                return str(self._meta[sid]["m"])
+            return "-"
+
     def reset_today_attendance(self) -> None:
         """Clear today's attendance records (useful during testing)."""
         with self._lock:
@@ -106,19 +147,39 @@ class AttendanceStore:
         full_name: Optional[str] = None,
         classroom: str = "-",
     ) -> None:
-        """Register or update a person directly in memory (no Excel required)."""
+        """Register or update a person directly in memory (and persist `m`/classroom metadata)."""
         sid = str(student_id).strip()
         if not sid:
             return
+        m_clean = str(classroom or "").strip() or "-"
         with self._lock:
             existing = self._roster.get(sid, {})
+            existing_meta = self._meta.get(sid, {})
+
+            resolved_name = full_name or existing.get("full_name") or existing_meta.get("full_name") or sid
+            if m_clean != "-":
+                resolved_classroom = m_clean
+            else:
+                resolved_classroom = (
+                    existing.get("classroom")
+                    if existing.get("classroom") not in (None, "", "-")
+                    else (existing_meta.get("m") or "-")
+                )
+
             self._roster[sid] = {
                 "student_id": sid,
-                "full_name": full_name or existing.get("full_name") or sid,
-                "classroom": existing.get("classroom") or classroom,
+                "full_name": resolved_name,
+                "classroom": resolved_classroom,
                 "leave_status": existing.get("leave_status", ""),
                 "is_excused": existing.get("is_excused", False),
             }
+
+            if resolved_classroom != "-" or full_name:
+                self._meta[sid] = {
+                    "m": resolved_classroom,
+                    "full_name": resolved_name,
+                }
+                self._save_face_meta()
 
     def remove_person(self, student_id: str) -> None:
         """Remove a person from the in-memory roster if not backed by Excel."""
@@ -126,6 +187,9 @@ class AttendanceStore:
         with self._lock:
             self._roster.pop(sid, None)
             self._present_today.pop(sid, None)
+            if sid in self._meta:
+                self._meta.pop(sid, None)
+                self._save_face_meta()
             self._save_attendance_log()
 
     def sync_from_face_data(self) -> None:
@@ -141,27 +205,101 @@ class AttendanceStore:
                     sid = str(sid).strip()
                     if not sid:
                         continue
+                    meta_info = self._meta.get(sid, {})
                     if isinstance(val, dict):
-                        name = val.get("name") or sid
+                        name = val.get("name") or meta_info.get("full_name") or sid
+                        m_val = val.get("m") or meta_info.get("m") or "-"
                     else:
-                        name = sid
+                        name = meta_info.get("full_name") or sid
+                        m_val = meta_info.get("m") or "-"
                     if sid not in self._roster:
                         self._roster[sid] = {
                             "student_id": sid,
                             "full_name": name,
-                            "classroom": "-",
+                            "classroom": m_val,
                             "leave_status": "",
                             "is_excused": False,
                         }
+                    elif m_val != "-" and self._roster[sid].get("classroom") in (None, "", "-"):
+                        self._roster[sid]["classroom"] = m_val
         except Exception as exc:
             logger.debug("Could not sync from face_data.json: %s", exc)
 
+    def sync_from_supabase(self) -> bool:
+        """
+        Pull records (`id_name`, `m`, `array_faceshape`) from Supabase into local
+        face_data.json and student roster so live face recognition stays in sync.
+        """
+        if not self._is_default_store or not supabase_manager.is_configured:
+            return False
+
+        ok, records, err = supabase_manager.fetch_all_records()
+        if not ok:
+            return False
+
+        face_data: Dict[str, list] = {}
+        if self.face_data_path.exists():
+            try:
+                loaded = json.loads(self.face_data_path.read_text(encoding="utf-8"))
+                if isinstance(loaded, dict):
+                    face_data = loaded
+            except Exception:
+                face_data = {}
+
+        face_data_changed = False
+        meta_changed = False
+
+        with self._lock:
+            for rec in records:
+                id_name = rec.get("id_name", "").strip()
+                if not id_name:
+                    continue
+                m_val = rec.get("m", "-") or "-"
+                samples = rec.get("array_faceshape") or []
+
+                existing = self._roster.get(id_name, {})
+                resolved_m = m_val if m_val != "-" else (existing.get("classroom") or "-")
+                self._roster[id_name] = {
+                    "student_id": id_name,
+                    "full_name": existing.get("full_name") or id_name,
+                    "classroom": resolved_m,
+                    "leave_status": existing.get("leave_status", ""),
+                    "is_excused": existing.get("is_excused", False),
+                }
+
+                if self._meta.get(id_name, {}).get("m") != resolved_m:
+                    self._meta[id_name] = {
+                        "m": resolved_m,
+                        "full_name": existing.get("full_name") or id_name,
+                    }
+                    meta_changed = True
+
+                if samples and face_data.get(id_name) != samples:
+                    face_data[id_name] = samples
+                    face_data_changed = True
+
+            self._last_sync_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+        if meta_changed:
+            self._save_face_meta()
+
+        if face_data_changed:
+            try:
+                self.face_data_path.write_text(
+                    json.dumps(face_data, ensure_ascii=False, indent=2),
+                    encoding="utf-8",
+                )
+            except Exception as exc:
+                logger.error("Failed to update face_data.json from Supabase: %s", exc)
+
+        return True
+
     def sync_from_excel(self) -> bool:
         """
-        Optional non-blocking read of students.xlsx.
-        If students.xlsx is not used yet (missing or empty), the system works seamlessly
-        using face_data.json and in-memory registrations.
+        Optional non-blocking read of students.xlsx, plus Supabase and face_data.json sync.
         """
+        if self._is_default_store and supabase_manager.is_configured:
+            self.sync_from_supabase()
         self.sync_from_face_data()
 
         if not self.excel_path.exists():

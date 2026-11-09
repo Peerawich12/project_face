@@ -6,6 +6,7 @@ from pathlib import Path
 import numpy as np
 
 from data_sync import AttendanceStore
+from supabase_sync import parse_faceshape_to_samples
 from vision import VisionEngine
 
 
@@ -68,6 +69,32 @@ class TestSchoolAttendanceSystem(unittest.TestCase):
         self.store.register_person("101")
         self.assertTrue(self.vision.record_detection("101"))
         self.assertFalse(self.vision.record_detection("101"))
+
+    def test_supabase_faceshape_parsing_and_custom_record(self):
+        rng = np.random.default_rng(7)
+        vec_128 = rng.normal(0, 0.1, 128).tolist()
+
+        # Test 1D list, 2D list, and JSON string parsing
+        parsed_1d = parse_faceshape_to_samples(vec_128)
+        self.assertEqual(len(parsed_1d), 1)
+        self.assertEqual(len(parsed_1d[0]), 128)
+
+        parsed_json = parse_faceshape_to_samples(json.dumps([vec_128]))
+        self.assertEqual(len(parsed_json), 1)
+
+        # Save record with id_name, m, array_faceshape
+        saved = self.vision.save_custom_faceshape_record(
+            id_name="09627 สมชาย",
+            m="ม.4/1",
+            array_faceshape=parsed_1d,
+            append_sample=False,
+        )
+        self.assertEqual(len(saved), 1)
+        self.assertEqual(self.store.get_person_m("09627 สมชาย"), "ม.4/1")
+
+        # Verify live matching works with the saved record
+        matched_id, _ = self.vision._match_encoding(np.array(vec_128))
+        self.assertEqual(matched_id, "09627 สมชาย")
 
 
 if __name__ == "__main__":
