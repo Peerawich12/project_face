@@ -21,8 +21,8 @@ logger = logging.getLogger("school_attendance.supabase")
 # ==============================================================================
 # SUPABASE CONFIGURATION — ใส่ SUPABASE_URL และ SUPABASE_KEY ที่นี่โดยตรง
 # ==============================================================================
-#SUPABASE_URL = ""
-#SUPABASE_KEY = ""
+SUPABASE_URL = "https://lujiagaxncgrbuvdrccp.supabase.co"
+SUPABASE_KEY = "sb_secret_RV7jdE3DRYg5rWE70hecIg_YXwxseLX"
 
 SUPABASE_TABLE = "face_data"
 

@@ -6,9 +6,10 @@ import shutil
 import threading
 import time
 import urllib.request
+from collections import deque
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Deque, Dict, List, Optional, Tuple
 
 import cv2
 import numpy as np
@@ -34,7 +35,10 @@ YUNET_MODEL_URL = (
     "face_detection_yunet/face_detection_yunet_2023mar.onnx"
 )
 DEFAULT_COOLDOWN_SECONDS = 300  # 5 minutes cooldown
-DEFAULT_MATCH_TOLERANCE = 0.44  # Base threshold for close-range faces
+DEFAULT_MATCH_TOLERANCE = 0.42  # Base threshold for close-range faces (tighter to separate similar arrays)
+DEFAULT_MIN_MATCH_MARGIN = 0.032  # Required separation margin between #1 and #2 closest people
+DEFAULT_STABILITY_FRAMES = 7  # Consecutive/consistent frames required before confirming identity
+MAX_MISSED_TRACK_FRAMES = 3  # Grace frames before dropping a tracked face when detector misses a frame
 
 
 def _load_face_data(path: Path) -> Dict[str, List[List[float]]]:
@@ -71,8 +75,79 @@ def _save_face_data(path: Path, data: Dict[str, List[List[float]]]) -> None:
         logger.error("Failed to save face_data.json: %s", exc)
 
 
+def _filter_and_dedup_person_arrays(
+    vecs: List[np.ndarray],
+) -> Tuple[List[np.ndarray], Optional[np.ndarray]]:
+    """
+    Clean a person's stored 128-d face arrays to prevent similar/ambiguous cross-person matches:
+    1. Rejects extreme outlier arrays (e.g. 90-degree 1-eye side profiles or false background
+       detections whose distance from the person's core medoid cluster exceeds 0.48).
+    2. Deduplicates near-identical arrays (distance < 0.16) so duplicate captures do not
+       unfairly skew top-k distance scoring.
+    3. Computes a norm-preserved inlier centroid for hybrid centroid + cosine disambiguation.
+    """
+    if not vecs:
+        return [], None
+    if len(vecs) == 1:
+        return [vecs[0]], vecs[0].copy()
+
+    arr = np.array(vecs, dtype=np.float64)
+    n = len(arr)
+    dist_mat = np.linalg.norm(arr[:, None, :] - arr[None, :, :], axis=-1)
+
+    # 1. Identify the core medoid (sample with the most neighbors within 0.46, breaking ties by median distance)
+    neighbor_counts = np.sum(dist_mat < 0.46, axis=1)
+    median_dists = np.median(dist_mat, axis=1)
+    best_idx = int(
+        min(
+            range(n),
+            key=lambda i: (-int(neighbor_counts[i]), float(median_dists[i])),
+        )
+    )
+
+    inlier_indices = [
+        i
+        for i in range(n)
+        if dist_mat[best_idx, i] <= 0.48
+        or any(
+            dist_mat[best_idx, k] <= 0.38 and dist_mat[k, i] <= 0.42
+            for k in range(n)
+        )
+    ]
+    if not inlier_indices:
+        inlier_indices = [best_idx]
+
+    inliers = [arr[i] for i in inlier_indices]
+
+    # 2. Merge/deduplicate near-identical vectors (distance < 0.16)
+    deduped: List[np.ndarray] = []
+    for v in inliers:
+        merged = False
+        for idx_d, existing in enumerate(deduped):
+            if float(np.linalg.norm(v - existing)) < 0.16:
+                deduped[idx_d] = 0.5 * (existing + v)
+                merged = True
+                break
+        if not merged:
+            deduped.append(v)
+
+    if not deduped:
+        deduped = [inliers[0]]
+
+    # 3. Compute norm-preserved centroid of clean inliers
+    raw_mean = np.mean(deduped, axis=0)
+    mean_norm = float(np.mean([np.linalg.norm(v) for v in deduped]))
+    raw_norm = float(np.linalg.norm(raw_mean))
+    centroid = raw_mean * (mean_norm / raw_norm) if raw_norm > 1e-9 else raw_mean.copy()
+
+    return deduped, centroid
+
+
 class TrackedFace:
-    """Tracks a face bounding box and its label smoothly across frames."""
+    """
+    Tracks a face bounding box and stabilizes identity across `stability_frames` (default: 7 frames).
+    Prevents 1-frame flickers or false matches caused by similar arrays across different people.
+    """
 
     def __init__(
         self,
@@ -80,11 +155,27 @@ class TrackedFace:
         label: str = "Unknown",
         distance: float = 1.0,
         last_encoded_ts: float = 0.0,
+        stability_frames: int = DEFAULT_STABILITY_FRAMES,
     ) -> None:
         self.box_full = box_full  # (top, right, bottom, left) in full frame coordinates
-        self.label = label
+        self.label = label  # Confirmed label (remains "Unknown" until stable across `stability_frames`)
         self.distance = distance
         self.last_encoded_ts = last_encoded_ts
+        self.stability_frames = max(1, int(stability_frames))
+
+        # 7-frame stabilization state
+        self.candidate_label: str = label if label != "Unknown" else "Unknown"
+        self.stable_frames: int = self.stability_frames if label != "Unknown" else 0
+        self.challenger_label: str = "Unknown"
+        self.challenger_frames: int = 0
+        self.missed_frames: int = 0
+
+        self.encoding_history: Deque[np.ndarray] = deque(maxlen=self.stability_frames)
+        self.frame_votes: Deque[str] = deque(maxlen=self.stability_frames)
+
+    @property
+    def is_stable(self) -> bool:
+        return self.label != "Unknown" and self.stable_frames >= self.stability_frames
 
     @property
     def center(self) -> Tuple[float, float]:
@@ -95,6 +186,108 @@ class TrackedFace:
     def width(self) -> int:
         top, right, bottom, left = self.box_full
         return max(1, right - left)
+
+    def update_box_smooth(self, new_box: Tuple[int, int, int, int], alpha: float = 0.68) -> None:
+        """Smooth bounding box coordinates across frames while resetting missed-frame counter."""
+        pt, pr, pb, pl = self.box_full
+        nt, nr, nb, nl = new_box
+        self.box_full = (
+            int(round(alpha * nt + (1.0 - alpha) * pt)),
+            int(round(alpha * nr + (1.0 - alpha) * pr)),
+            int(round(alpha * nb + (1.0 - alpha) * pb)),
+            int(round(alpha * nl + (1.0 - alpha) * pl)),
+        )
+        self.missed_frames = 0
+
+    def get_smoothed_encoding(self, new_enc: np.ndarray) -> np.ndarray:
+        """
+        Return the temporally smoothed 128-d encoding across recent frames in the 7-frame window,
+        preserving vector norm so random single-frame landmark noise cancels out.
+        """
+        if not self.encoding_history:
+            return new_enc
+        recent = [e for e in self.encoding_history if float(np.linalg.norm(new_enc - e)) <= 0.38]
+        recent.append(new_enc)
+        if len(recent) == 1:
+            return new_enc
+        weights = np.linspace(0.6, 1.4, num=len(recent))
+        weighted_mean = np.average(np.array(recent, dtype=np.float64), axis=0, weights=weights)
+        mean_norm = float(np.mean([np.linalg.norm(v) for v in recent]))
+        w_norm = float(np.linalg.norm(weighted_mean))
+        return weighted_mean * (mean_norm / w_norm) if w_norm > 1e-9 else new_enc
+
+    def record_frame_match(
+        self,
+        matched_id: str,
+        dist_score: float,
+        encoding: np.ndarray,
+        now_ts: float,
+    ) -> bool:
+        """
+        Update the 7-frame stability state machine with a new frame's match result.
+        Returns True if the identity is confirmed (or re-confirmed) across `self.stability_frames` frames.
+        """
+        self.last_encoded_ts = now_ts
+        self.distance = dist_score
+        self.frame_votes.append(matched_id)
+
+        # Case 1: Not yet confirmed (building up to 7 stable frames)
+        if self.label == "Unknown":
+            if matched_id != "Unknown":
+                if matched_id == self.candidate_label:
+                    self.encoding_history.append(encoding)
+                    self.stable_frames = min(self.stability_frames, self.stable_frames + 1)
+                else:
+                    # Switched candidate: require a fresh 7-frame streak for the new candidate
+                    self.candidate_label = matched_id
+                    self.stable_frames = 1
+                    self.encoding_history.clear()
+                    self.encoding_history.append(encoding)
+
+                if self.stable_frames >= self.stability_frames:
+                    self.label = self.candidate_label
+                    self.challenger_label = "Unknown"
+                    self.challenger_frames = 0
+                    return True
+            else:
+                # Ambiguous / Unknown frame: decay stability counter so 1-2 frame false matches never confirm
+                self.stable_frames = max(0, self.stable_frames - 1)
+                if self.stable_frames == 0:
+                    self.candidate_label = "Unknown"
+                    self.encoding_history.clear()
+            return False
+
+        # Case 2: Already confirmed across 7 frames -> keep rock-solid unless 7 frames disagree
+        if matched_id == self.label:
+            self.encoding_history.append(encoding)
+            self.stable_frames = self.stability_frames
+            self.challenger_label = "Unknown"
+            self.challenger_frames = 0
+            return True
+
+        # A different label or "Unknown" appeared on this frame while already confirmed
+        if matched_id == self.challenger_label:
+            self.challenger_frames += 1
+        else:
+            self.challenger_label = matched_id
+            self.challenger_frames = 1
+
+        if self.challenger_frames >= self.stability_frames:
+            # The new state persisted for a full 7 frames -> transition state
+            self.label = self.challenger_label
+            self.candidate_label = self.challenger_label
+            self.encoding_history.clear()
+            if self.label != "Unknown":
+                self.stable_frames = self.stability_frames
+                self.encoding_history.append(encoding)
+                self.challenger_label = "Unknown"
+                self.challenger_frames = 0
+                return True
+            else:
+                self.stable_frames = 0
+                self.challenger_label = "Unknown"
+                self.challenger_frames = 0
+        return False
 
 
 class VisionEngine:
@@ -108,8 +301,9 @@ class VisionEngine:
        Crops the detected face from the full-resolution frame and upscales small/distant
        faces with Lanczos-4 interpolation to a normalized 160x160 patch before extracting
        the 128-d face array, so distant faces match close-up registered arrays accurately.
-    3. Thread-Safe Capture -> Save in `faces/` -> Process Array -> Real-Time Detection:
-       Protected by `_dlib_lock` so pressing Capture never crashes or exits.
+    3. Disambiguation for Similar Arrays & 7-Frame Temporal Stability:
+       Filters outlier/duplicate arrays, checks centroid + cosine + second-best margin,
+       and requires 7 consistent frames before confirming a detection.
     """
 
     def __init__(
@@ -120,6 +314,8 @@ class VisionEngine:
         cooldown_seconds: int = DEFAULT_COOLDOWN_SECONDS,
         camera_index: int = 1,  # Default to 1 (USB Webcam), fallback to 0 (PC Camera)
         match_tolerance: float = DEFAULT_MATCH_TOLERANCE,
+        min_match_margin: float = DEFAULT_MIN_MATCH_MARGIN,
+        stability_frames: int = DEFAULT_STABILITY_FRAMES,
     ) -> None:
         self.store = store
         self.faces_dir = faces_dir
@@ -127,6 +323,8 @@ class VisionEngine:
         self.cooldown_seconds = cooldown_seconds
         self.camera_index = camera_index
         self.match_tolerance = match_tolerance
+        self.min_match_margin = min_match_margin
+        self.stability_frames = max(1, int(stability_frames))
         self.show_window = True
 
         self._switch_camera_requested: Optional[int] = None
@@ -142,6 +340,7 @@ class VisionEngine:
 
         # Known face arrays per person: student_id -> List[np.ndarray(128,)]
         self.known_person_arrays: Dict[str, List[np.ndarray]] = {}
+        self.known_person_centroids: Dict[str, np.ndarray] = {}
         self.known_face_encodings: List[np.ndarray] = []
         self.known_student_ids: List[str] = []
 
@@ -187,7 +386,7 @@ class VisionEngine:
                 str(YUNET_MODEL_PATH),
                 "",
                 (640, 480),
-                0.48,  # Low enough confidence threshold to catch small faces far away (3-6m)
+                0.55,  # Balanced confidence to avoid wall-art false positives while catching distant faces
                 0.3,
                 5000,
             )
@@ -197,49 +396,81 @@ class VisionEngine:
             logger.warning("Could not initialize YuNet detector (falling back to HOG): %s", exc)
             self._yunet_detector = None
 
+    def _detect_faces_with_landmarks(
+        self, frame_bgr: np.ndarray
+    ) -> List[Tuple[Tuple[int, int, int, int], float, float]]:
+        """
+        Detect faces across the frame and return `(box_full, score, eye_ratio)` for each face.
+        For ultra-high-resolution images (e.g. > 800px phone uploads), normalizes YuNet input
+        scale so close-up faces fit YuNet's anchor receptive field accurately.
+        """
+        h, w = frame_bgr.shape[:2]
+
+        if self._yunet_detector is not None:
+            try:
+                max_dim = max(h, w)
+                det_scale = 640.0 / float(max_dim) if max_dim > 800 else 1.0
+                if det_scale < 1.0:
+                    det_w = max(64, int(round(w * det_scale)))
+                    det_h = max(64, int(round(h * det_scale)))
+                    det_img = cv2.resize(frame_bgr, (det_w, det_h), interpolation=cv2.INTER_AREA)
+                else:
+                    det_w, det_h = w, h
+                    det_img = frame_bgr
+
+                with self._yunet_lock:
+                    if self._yunet_input_size != (det_w, det_h):
+                        self._yunet_detector.setInputSize((det_w, det_h))
+                        self._yunet_input_size = (det_w, det_h)
+                    _, faces = self._yunet_detector.detect(det_img)
+
+                results: List[Tuple[Tuple[int, int, int, int], float, float]] = []
+                if faces is not None:
+                    inv_scale = 1.0 / det_scale
+                    for det in faces:
+                        fx = float(det[0]) * inv_scale
+                        fy = float(det[1]) * inv_scale
+                        fw = float(det[2]) * inv_scale
+                        fh = float(det[3]) * inv_scale
+                        if fw < 14 or fh < 14:
+                            continue
+
+                        re_x = float(det[4]) * inv_scale
+                        re_y = float(det[5]) * inv_scale
+                        le_x = float(det[6]) * inv_scale
+                        le_y = float(det[7]) * inv_scale
+                        score = float(det[14]) if len(det) > 14 else 1.0
+                        eye_dist = math.hypot(le_x - re_x, le_y - re_y)
+                        eye_ratio = eye_dist / max(fw, 1.0)
+
+                        top = max(0, int(round(fy)))
+                        left = max(0, int(round(fx)))
+                        bottom = min(h, int(round(fy + fh)))
+                        right = min(w, int(round(fx + fw)))
+                        if (right - left) >= 14 and (bottom - top) >= 14:
+                            results.append(((top, right, bottom, left), score, eye_ratio))
+                return results
+            except Exception as exc:
+                logger.debug("YuNet detect error: %s", exc)
+
+        if FACE_RECOGNITION_AVAILABLE:
+            half = cv2.resize(frame_bgr, (0, 0), fx=0.5, fy=0.5)
+            rgb_half = cv2.cvtColor(half, cv2.COLOR_BGR2RGB)
+            with self._dlib_lock:
+                locs = face_recognition.face_locations(rgb_half, number_of_times_to_upsample=1, model="hog")
+            return [((t * 2, r * 2, b * 2, l * 2), 1.0, 0.42) for (t, r, b, l) in locs]
+
+        return []
+
     def _detect_faces_full_frame(self, frame_bgr: np.ndarray) -> List[Tuple[int, int, int, int]]:
         """
         Detect faces across the FULL resolution frame so students standing far away
         (2m - 6m from the camera) are detected reliably.
         Returns list of (top, right, bottom, left) in full-frame pixel coordinates.
         """
-        h, w = frame_bgr.shape[:2]
-
-        # 1. Primary: YuNet on full frame (~7ms, detects faces down to 15x15 px at 5m+ distance)
-        if self._yunet_detector is not None:
-            try:
-                with self._yunet_lock:
-                    if self._yunet_input_size != (w, h):
-                        self._yunet_detector.setInputSize((w, h))
-                        self._yunet_input_size = (w, h)
-                    _, faces = self._yunet_detector.detect(frame_bgr)
-
-                boxes: List[Tuple[int, int, int, int]] = []
-                if faces is not None:
-                    for det in faces:
-                        fx, fy, fw, fh = int(det[0]), int(det[1]), int(det[2]), int(det[3])
-                        if fw < 14 or fh < 14:
-                            continue
-                        # Make bounding box a clean square-ish region around the face
-                        top = max(0, fy)
-                        left = max(0, fx)
-                        bottom = min(h, fy + fh)
-                        right = min(w, fx + fw)
-                        if (right - left) >= 14 and (bottom - top) >= 14:
-                            boxes.append((top, right, bottom, left))
-                return boxes
-            except Exception as exc:
-                logger.debug("YuNet detect error: %s", exc)
-
-        # 2. Fallback if YuNet unavailable: dlib HOG at 0.5x scale (2x more range than 0.25x)
-        if FACE_RECOGNITION_AVAILABLE:
-            half = cv2.resize(frame_bgr, (0, 0), fx=0.5, fy=0.5)
-            rgb_half = cv2.cvtColor(half, cv2.COLOR_BGR2RGB)
-            with self._dlib_lock:
-                locs = face_recognition.face_locations(rgb_half, number_of_times_to_upsample=1, model="hog")
-            return [(t * 2, r * 2, b * 2, l * 2) for (t, r, b, l) in locs]
-
-        return []
+        detections = self._detect_faces_with_landmarks(frame_bgr)
+        # Filter out extreme 90-degree 1-eye profile false/unalignable boxes (eye_ratio < 0.16)
+        return [box for (box, _score, eye_ratio) in detections if eye_ratio >= 0.16]
 
     def _encode_face_box(
         self,
@@ -308,12 +539,31 @@ class VisionEngine:
                 return None
             return encodings[0]
 
-    def _extract_array_from_bgr(self, bgr_img: np.ndarray) -> Optional[List[float]]:
-        """Detect the primary face in `bgr_img` at any distance and extract its 128-d array."""
-        boxes = self._detect_faces_full_frame(bgr_img)
-        if not boxes:
+    def _extract_array_from_bgr(
+        self,
+        bgr_img: np.ndarray,
+        min_eye_ratio: float = 0.22,
+    ) -> Optional[List[float]]:
+        """
+        Detect the primary face in `bgr_img` and extract its 128-d array.
+        Rejects extreme 90-degree single-eye side profiles (`eye_ratio < min_eye_ratio`)
+        so distorted profile encodings do not pollute `face_data.json`.
+        """
+        detections = self._detect_faces_with_landmarks(bgr_img)
+        if not detections:
             return None
-        largest_box = max(boxes, key=lambda b: (b[2] - b[0]) * (b[1] - b[3]))
+
+        # Prefer high-confidence detections with both eyes visible
+        valid = [d for d in detections if d[1] >= 0.60 and d[2] >= min_eye_ratio]
+        if not valid:
+            valid = [d for d in detections if d[2] >= min_eye_ratio]
+        if not valid:
+            return None
+
+        largest_box, _score, _er = max(
+            valid,
+            key=lambda item: (item[0][2] - item[0][0]) * (item[0][1] - item[0][3]),
+        )
         enc = self._encode_face_box(bgr_img, largest_box)
         if enc is None:
             return None
@@ -337,7 +587,7 @@ class VisionEngine:
     def sync_folder_to_array(self, force: bool = False) -> int:
         """
         Automatically import images saved in `faces/` folder, process their face into a 128-d array,
-        and save to `face_data.json`.
+        clean outlier/duplicate samples, and save to `face_data.json`.
         """
         self.faces_dir.mkdir(parents=True, exist_ok=True)
         sig = self._compute_folder_signature()
@@ -395,11 +645,14 @@ class VisionEngine:
                     logger.warning("Failed to process image %s to array: %s", img_path, exc)
 
             if extracted_arrays:
-                face_data[label] = extracted_arrays
+                raw_vecs = [np.array(v[:128], dtype=np.float64) for v in extracted_arrays]
+                clean_vecs, _ = _filter_and_dedup_person_arrays(raw_vecs)
+                face_data[label] = [np.round(v, 6).tolist() for v in clean_vecs]
                 updated = True
                 logger.info(
-                    "Imported %d image(s) from faces/ folder into array for '%s'",
-                    len(extracted_arrays),
+                    "Imported %d clean array(s) (from %d image(s)) for '%s'",
+                    len(clean_vecs),
+                    len(img_paths),
                     label,
                 )
 
@@ -410,23 +663,29 @@ class VisionEngine:
         return len(self.known_person_arrays)
 
     def load_known_faces(self) -> int:
-        """Load face arrays from face_data.json into memory."""
+        """Load face arrays from face_data.json into memory, filtering outliers & deduplicating."""
         self.known_person_arrays.clear()
+        self.known_person_centroids.clear()
         self.known_face_encodings.clear()
         self.known_student_ids.clear()
 
         face_data = _load_face_data(self.face_data_file)
         for student_id, encodings_list in face_data.items():
             self.store.register_person(student_id)
-            person_vecs: List[np.ndarray] = []
+            raw_vecs: List[np.ndarray] = []
             for vec in encodings_list:
                 arr = np.array(vec[:128], dtype=np.float64)
                 if arr.shape == (128,):
-                    person_vecs.append(arr)
+                    raw_vecs.append(arr)
+
+            if raw_vecs:
+                clean_vecs, centroid = _filter_and_dedup_person_arrays(raw_vecs)
+                self.known_person_arrays[student_id] = clean_vecs
+                if centroid is not None:
+                    self.known_person_centroids[student_id] = centroid
+                for arr in clean_vecs:
                     self.known_face_encodings.append(arr)
                     self.known_student_ids.append(student_id)
-            if person_vecs:
-                self.known_person_arrays[student_id] = person_vecs
 
         return len(self.known_person_arrays)
 
@@ -580,6 +839,10 @@ class VisionEngine:
                     tcx, tcy = tf.center
                     if math.hypot(cx - tcx, cy - tcy) < 120:
                         tf.label = student_id
+                        tf.candidate_label = student_id
+                        tf.stable_frames = self.stability_frames
+                        tf.challenger_label = "Unknown"
+                        tf.challenger_frames = 0
                         tf.distance = 0.0
                         tf.last_encoded_ts = time.monotonic()
 
@@ -683,8 +946,11 @@ class VisionEngine:
         self.load_known_faces()
         with self._track_lock:
             for tf in self._tracked_faces:
-                if tf.label == student_id:
+                if tf.label == student_id or tf.candidate_label == student_id:
                     tf.label = "Unknown"
+                    tf.candidate_label = "Unknown"
+                    tf.stable_frames = 0
+                    tf.encoding_history.clear()
         return existed
 
     def is_on_cooldown(self, student_id: str, now_ts: Optional[float] = None) -> bool:
@@ -704,7 +970,10 @@ class VisionEngine:
 
         self.last_seen[student_id] = now_ts
         self.store.mark_student_present(student_id, datetime.now())
-        self._set_banner(f"DETECTED: {student_id}", duration=3.0)
+        self._set_banner(
+            f"DETECTED: {student_id} (Stable {self.stability_frames}/{self.stability_frames} frames)",
+            duration=3.0,
+        )
         return True
 
     def _set_banner(self, text: str, duration: float = 3.0) -> None:
@@ -717,45 +986,84 @@ class VisionEngine:
         face_width_px: int = 120,
     ) -> Tuple[str, float]:
         """
-        Compare a live 128-d face array against stored person arrays.
-        Includes distance-adaptive tolerance: when a student is far from the camera
-        (small face width in pixels, e.g. < 75px at 2-5m distance), allows a slight
-        optical-blur margin (+0.04) so distant students are recognized smoothly.
+        Compare a live 128-d face array against stored person arrays with disambiguation
+        for similar arrays across different people:
+        1. Hybrid score combining closest sample (`min_d`), top-2 sample average (`top2_avg`),
+           and norm-preserved inlier centroid distance (`centroid_d`).
+        2. Cosine direction consistency check against the person's centroid.
+        3. Second-best margin check (`self.min_match_margin`) so frames that fall ambiguously
+           between two people with similar arrays are rejected as "Unknown" instead of flipping.
         """
         if not self.known_person_arrays:
             return "Unknown", 1.0
 
         # Distance-adaptive threshold:
-        # Close range (>= 90px face): self.match_tolerance (0.44)
-        # Medium/Far range (20px..85px face): smoothly up to +0.045 (0.485)
+        # Close range (>= 90px face): self.match_tolerance (0.42)
+        # Medium/Far range (20px..89px face): conservative margin up to +0.025 (max 0.445)
         extra_far_margin = 0.0
         if face_width_px < 90:
-            extra_far_margin = min(0.045, (90 - face_width_px) / 90.0 * 0.05)
+            extra_far_margin = min(0.025, (90 - face_width_px) / 90.0 * 0.03)
         effective_tolerance = self.match_tolerance + extra_far_margin
 
-        best_person = "Unknown"
-        best_dist = 1.0
+        enc_vec = np.asarray(face_encoding[:128], dtype=np.float64)
+        enc_norm = float(np.linalg.norm(enc_vec))
+
+        # Candidates list: (hybrid_score, min_d, cos_dist, person_id)
+        candidates: List[Tuple[float, float, float, str]] = []
 
         for person_id, vec_list in self.known_person_arrays.items():
             if not vec_list:
                 continue
-            dists = [float(np.linalg.norm(face_encoding - v[:128])) for v in vec_list]
+            dists = [float(np.linalg.norm(enc_vec - v[:128])) for v in vec_list]
             dists.sort()
             min_d = dists[0]
-            top_avg = sum(dists[: min(3, len(dists))]) / min(3, len(dists))
-            score = 0.65 * min_d + 0.35 * top_avg
+            top2_avg = sum(dists[: min(2, len(dists))]) / min(2, len(dists))
 
-            if min_d <= effective_tolerance and score < best_dist:
-                best_dist = score
-                best_person = person_id
+            centroid = self.known_person_centroids.get(person_id)
+            if centroid is not None:
+                c_vec = centroid[:128]
+                centroid_d = float(np.linalg.norm(enc_vec - c_vec))
+                c_norm = float(np.linalg.norm(c_vec))
+                denom = enc_norm * c_norm
+                cos_sim = float(np.dot(enc_vec, c_vec) / denom) if denom > 1e-9 else 0.0
+                cos_dist = 1.0 - cos_sim
+            else:
+                centroid_d = top2_avg
+                cos_dist = 0.0
 
-        return best_person, best_dist
+            score = 0.58 * min_d + 0.24 * top2_avg + 0.18 * centroid_d
+            candidates.append((score, min_d, cos_dist, person_id))
+
+        if not candidates:
+            return "Unknown", 1.0
+
+        candidates.sort(key=lambda item: item[0])
+        best_score, best_min_d, best_cos_d, best_person = candidates[0]
+
+        # 1. Must be within distance tolerance and directionally consistent with the person's cluster
+        if (
+            best_min_d > effective_tolerance
+            or best_score > (effective_tolerance + 0.018)
+            or best_cos_d > 0.065
+        ):
+            return "Unknown", 1.0
+
+        # 2. Distinctiveness / Ambiguity margin check when multiple people are registered:
+        #    If a second person's arrays are nearly as close as the best match, reject this frame
+        #    unless best_min_d is an unmistakable close match (<= 0.34).
+        if len(candidates) >= 2 and best_min_d > 0.34:
+            second_score, second_min_d, _, _ = candidates[1]
+            score_margin = second_score - best_score
+            min_d_margin = second_min_d - best_min_d
+            if score_margin < self.min_match_margin and min_d_margin < (self.min_match_margin * 0.85):
+                return "Unknown", 1.0
+
+        return best_person, best_score
 
     def _vision_worker_loop(self) -> None:
         """
-        Dedicated background thread for Long-Distance Face Detection & Array Matching.
-        - Uses YuNet on the FULL frame (~7ms) to detect faces even 4-6 meters away.
-        - Upscales small distant face crops with Lanczos-4 before computing 128-d arrays.
+        Dedicated background thread for Long-Distance Face Detection, Similar-Array Disambiguation,
+        and 7-Frame Temporal Stability (`self.stability_frames = 7`).
         """
         while self._running:
             now_ts = time.monotonic()
@@ -779,7 +1087,12 @@ class VisionEngine:
 
                 if not boxes_full:
                     with self._track_lock:
-                        self._tracked_faces.clear()
+                        kept_tracks: List[TrackedFace] = []
+                        for tf in self._tracked_faces:
+                            tf.missed_frames += 1
+                            if tf.missed_frames <= MAX_MISSED_TRACK_FRAMES:
+                                kept_tracks.append(tf)
+                        self._tracked_faces = kept_tracks
                     time.sleep(0.02)
                     continue
 
@@ -803,54 +1116,92 @@ class VisionEngine:
                             continue
                         ocx, ocy = old_tf.center
                         d = math.hypot(cx - ocx, cy - ocy)
-                        # Allow proportional movement threshold (works for both small distant & large close boxes)
-                        if d < best_dist and d < max(box_w * 0.85, 45.0):
+                        if d < best_dist and d < max(box_w * 0.90, 50.0):
                             best_dist = d
                             best_old_idx = o_idx
 
                     if best_old_idx >= 0:
                         used_old.add(best_old_idx)
-                        prev = old_tracked[best_old_idx]
-                        tf = TrackedFace(
-                            box_full=box_full,
-                            label=prev.label,
-                            distance=prev.distance,
-                            last_encoded_ts=prev.last_encoded_ts,
-                        )
+                        tf = old_tracked[best_old_idx]
+                        tf.stability_frames = self.stability_frames
+                        tf.update_box_smooth(box_full)
                     else:
                         tf = TrackedFace(
                             box_full=box_full,
                             label="Unknown",
                             distance=1.0,
                             last_encoded_ts=0.0,
+                            stability_frames=self.stability_frames,
                         )
 
                     new_tracked.append(tf)
 
-                    if self.known_person_arrays and (
-                        tf.label == "Unknown" or (now_ts - tf.last_encoded_ts) > 1.2
-                    ):
+                    # Encode every frame while building 7-frame stability (or resolving a challenger),
+                    # and re-verify every 0.45s once already confirmed across 7 frames.
+                    needs_encoding = (
+                        not tf.is_stable
+                        or tf.challenger_frames > 0
+                        or (now_ts - tf.last_encoded_ts) > 0.45
+                    )
+                    if self.known_person_arrays and needs_encoding:
                         boxes_to_encode.append((idx_box, box_full))
+
+                # Keep any recently tracked face that momentarily missed 1-3 detector frames
+                for o_idx, old_tf in enumerate(old_tracked):
+                    if o_idx not in used_old:
+                        old_tf.missed_frames += 1
+                        if old_tf.missed_frames <= MAX_MISSED_TRACK_FRAMES:
+                            ocx, ocy = old_tf.center
+                            overlaps_new = any(
+                                math.hypot(ocx - tf.center[0], ocy - tf.center[1]) < max(tf.width * 0.7, 40.0)
+                                for tf in new_tracked
+                            )
+                            if not overlaps_new:
+                                new_tracked.append(old_tf)
 
                 # Immediately publish updated bounding boxes so labels move smoothly at 30 FPS
                 with self._track_lock:
                     self._tracked_faces = new_tracked
 
-                # 2. Extract 128-d array from upscaled full-res face crops for any face needing ID
+                # 2. Extract 128-d array and update 7-frame stability state
                 if boxes_to_encode and self.known_person_arrays:
                     enc_ts = time.monotonic()
                     for target_idx, box_full in boxes_to_encode:
+                        if target_idx >= len(new_tracked):
+                            continue
+                        tf = new_tracked[target_idx]
                         enc = self._encode_face_box(frame, box_full)
                         if enc is None:
                             continue
+
                         face_w = max(1, box_full[1] - box_full[3])
-                        matched_id, dist_score = self._match_encoding(enc, face_width_px=face_w)
-                        if matched_id != "Unknown":
-                            self.record_detection(matched_id)
-                        if target_idx < len(new_tracked):
-                            new_tracked[target_idx].label = matched_id
-                            new_tracked[target_idx].distance = dist_score
-                            new_tracked[target_idx].last_encoded_ts = enc_ts
+                        raw_id, raw_score = self._match_encoding(enc, face_width_px=face_w)
+
+                        # Temporal smoothing across up to 7 frames in `tf.encoding_history`
+                        smooth_enc = tf.get_smoothed_encoding(enc)
+                        smooth_id, smooth_score = self._match_encoding(smooth_enc, face_width_px=face_w)
+
+                        if raw_id != "Unknown" and smooth_id == raw_id:
+                            matched_id = raw_id
+                            dist_score = min(raw_score, smooth_score)
+                        elif raw_id != "Unknown" and len(tf.encoding_history) == 0:
+                            matched_id = raw_id
+                            dist_score = raw_score
+                        elif raw_id != "Unknown" and raw_score <= 0.33:
+                            matched_id = raw_id
+                            dist_score = raw_score
+                        else:
+                            matched_id = "Unknown"
+                            dist_score = 1.0
+
+                        confirmed = tf.record_frame_match(
+                            matched_id=matched_id,
+                            dist_score=dist_score,
+                            encoding=enc,
+                            now_ts=enc_ts,
+                        )
+                        if confirmed and tf.label != "Unknown":
+                            self.record_detection(tf.label)
 
                     with self._track_lock:
                         self._tracked_faces = new_tracked
@@ -865,7 +1216,7 @@ class VisionEngine:
     ) -> Tuple[np.ndarray, List[Tuple[str, Tuple[int, int, int, int]]]]:
         """
         Draw ONLY the clean bounding box and label around each detected face
-        (NO lines drawn inside the face).
+        (NO lines drawn inside the face), including 7-frame stability progress.
         """
         annotated = frame.copy()
         detections: List[Tuple[str, Tuple[int, int, int, int]]] = []
@@ -877,12 +1228,25 @@ class VisionEngine:
             top, right, bottom, left = tf.box_full
             student_id = tf.label
             is_known = student_id != "Unknown"
-            color = (0, 200, 83) if is_known else (0, 165, 255)
+            is_stabilizing = (
+                not is_known
+                and tf.candidate_label != "Unknown"
+                and 0 < tf.stable_frames < tf.stability_frames
+            )
+
+            if is_known:
+                color = (0, 200, 83)  # Green: confirmed across 7 frames
+                label_text = f"{student_id} ({tf.stable_frames}/{tf.stability_frames})"
+            elif is_stabilizing:
+                color = (235, 168, 14)  # Cyan/Amber: stabilizing across 7 frames
+                label_text = f"Verifying... ({tf.stable_frames}/{tf.stability_frames})"
+            else:
+                color = (0, 165, 255)  # Orange: Unknown
+                label_text = "Unknown"
 
             cv2.rectangle(annotated, (left, top), (right, bottom), color, 2)
 
-            label_text = student_id if is_known else "Unknown"
-            (tw, _), _ = cv2.getTextSize(label_text, cv2.FONT_HERSHEY_SIMPLEX, 0.58, 2)
+            (tw, _), _ = cv2.getTextSize(label_text, cv2.FONT_HERSHEY_SIMPLEX, 0.56, 2)
             label_w = max(right - left, tw + 16)
 
             cv2.rectangle(annotated, (left, bottom), (left + label_w, bottom + 28), color, cv2.FILLED)
@@ -891,7 +1255,7 @@ class VisionEngine:
                 label_text,
                 (left + 7, bottom + 20),
                 cv2.FONT_HERSHEY_SIMPLEX,
-                0.58,
+                0.56,
                 (255, 255, 255),
                 2,
                 cv2.LINE_AA,
@@ -906,8 +1270,8 @@ class VisionEngine:
             else f"CAMERA [Index {self.camera_index}]"
         )
         hud_text = (
-            f"{cam_label} (Long-Range) | Saved: {len(self.known_person_arrays)} "
-            f"| Press 'C': Capture | 'W': Switch Cam"
+            f"{cam_label} ({self.stability_frames}-Frame Stable) | Saved: {len(self.known_person_arrays)} "
+            f"| 'C': Capture | 'W': Switch Cam"
         )
         cv2.putText(
             annotated,
@@ -1142,13 +1506,16 @@ class VisionEngine:
             }
 
         return {
-            "engine": "YuNet Long-Distance Detector + Lanczos Upscale 128-d Array",
+            "engine": f"YuNet Long-Distance + {self.stability_frames}-Frame Stability + Similar-Array Disambiguation",
             "face_recognition_installed": FACE_RECOGNITION_AVAILABLE,
             "camera_active": self._camera_active,
             "camera_index": self.camera_index,
             "camera_name": "Webcam (Index 1)" if self.camera_index == 1 else "PC Camera (Index 0)",
             "known_faces_count": len(face_data),
             "total_arrays_count": len(self.known_face_encodings),
+            "stability_frames": self.stability_frames,
+            "match_tolerance": self.match_tolerance,
+            "min_match_margin": self.min_match_margin,
             "known_student_ids": registered_ids,
             "registered_files": registered_files,
             "array_previews": array_previews,
