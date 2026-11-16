@@ -1,3 +1,7 @@
 .venv/
 Lib/
 Scripts/
+<<<<<<< HEAD
+=======
+.env
+>>>>>>> 89fff09a2665b81f4e034922a2806e9b992a2612
