@@ -6,7 +6,7 @@ from pathlib import Path
 import numpy as np
 
 from data_sync import AttendanceStore
-from supabase_sync import parse_faceshape_to_samples
+from supabase_sync import normalize_classroom_code, parse_faceshape_to_samples
 from vision import TrackedFace, VisionEngine
 
 
@@ -157,6 +157,59 @@ class TestSchoolAttendanceSystem(unittest.TestCase):
         self.assertEqual(tf.label, "10511")
         tf.record_frame_match("09627", 0.39, enc_b, 12.0)
         self.assertEqual(tf.label, "10511")
+
+    def test_fast_walking_verification_across_7_frames(self):
+        rng = np.random.default_rng(77)
+        enc = rng.normal(0, 0.1, 128)
+
+        # Student enters camera frame and walks rapidly horizontally (+45px per frame)
+        tf = TrackedFace(box_full=(120, 220, 220, 120), stability_frames=7)
+        tf.pre_encoded_track_frames = 1
+
+        # 3 camera frames tracked at 45 FPS while background encoder computes 1st 128-d vector
+        for step in range(1, 4):
+            shift = step * 45
+            tf.update_box_smooth((120, 220 + shift, 220, 120 + shift))
+            self.assertFalse(tf.advance_tracked_frame(0.02 * step))
+
+        self.assertGreater(tf.vx, 20.0)
+
+        # Background encoder finishes with a strong match (dist = 0.29 <= 0.38)
+        # Pre-tracked frames credit up to 3 frames -> reaches 4/7
+        confirmed = tf.record_frame_match("09584", 0.29, enc, 0.18)
+        self.assertFalse(confirmed)
+        self.assertEqual(tf.stable_frames, 4)
+
+        # Next 3 tracked camera frames advance 5/7 -> 6/7 -> 7/7 and confirm in ~0.24s total!
+        self.assertFalse(tf.advance_tracked_frame(0.20))
+        self.assertEqual(tf.stable_frames, 5)
+        self.assertFalse(tf.advance_tracked_frame(0.22))
+        self.assertEqual(tf.stable_frames, 6)
+        self.assertTrue(tf.advance_tracked_frame(0.24))
+        self.assertEqual(tf.stable_frames, 7)
+        self.assertEqual(tf.label, "09584")
+        self.assertTrue(tf.is_stable)
+
+        # Verify borderline match (dist = 0.40 > 0.38) caps at 6/7 until 2nd encoding confirms
+        tf_borderline = TrackedFace(box_full=(100, 200, 200, 100), stability_frames=7)
+        tf_borderline.record_frame_match("09627", 0.40, enc, 1.0)
+        for step in range(10):
+            self.assertFalse(tf_borderline.advance_tracked_frame(1.0 + 0.02 * step))
+        self.assertEqual(tf_borderline.stable_frames, 6)
+        self.assertEqual(tf_borderline.label, "Unknown")
+        # 2nd encoding confirms borderline match -> reaches 7/7
+        self.assertTrue(tf_borderline.record_frame_match("09627", 0.39, enc, 1.25))
+        self.assertEqual(tf_borderline.label, "09627")
+
+    def test_classroom_normalization_and_scan_classification(self):
+        self.assertEqual(normalize_classroom_code("ม.5/1"), "5/1")
+        self.assertEqual(normalize_classroom_code("5/3"), "5/3")
+        self.assertEqual(normalize_classroom_code("ม. 2 / 4"), "2/4")
+        self.assertEqual(normalize_classroom_code("-"), "-")
+
+        self.assertEqual(self.store._classify_scan_status("07:45:00"), "present")
+        self.assertEqual(self.store._classify_scan_status("08:00:00"), "late")
+        self.assertEqual(self.store._classify_scan_status("08:30:12"), "late")
 
 
 if __name__ == "__main__":

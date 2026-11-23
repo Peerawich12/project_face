@@ -38,7 +38,7 @@ DEFAULT_COOLDOWN_SECONDS = 300  # 5 minutes cooldown
 DEFAULT_MATCH_TOLERANCE = 0.42  # Base threshold for close-range faces (tighter to separate similar arrays)
 DEFAULT_MIN_MATCH_MARGIN = 0.032  # Required separation margin between #1 and #2 closest people
 DEFAULT_STABILITY_FRAMES = 7  # Consecutive/consistent frames required before confirming identity
-MAX_MISSED_TRACK_FRAMES = 3  # Grace frames before dropping a tracked face when detector misses a frame
+MAX_MISSED_TRACK_FRAMES = 5  # Grace frames before dropping a tracked face when detector misses a walking frame
 
 
 def _load_face_data(path: Path) -> Dict[str, List[List[float]]]:
@@ -170,6 +170,12 @@ class TrackedFace:
         self.challenger_frames: int = 0
         self.missed_frames: int = 0
 
+        # Walking velocity & fast camera-frame tracking state
+        self.vx: float = 0.0
+        self.vy: float = 0.0
+        self.pre_encoded_track_frames: int = 0
+        self.verified_encodings_count: int = 1 if label != "Unknown" else 0
+
         self.encoding_history: Deque[np.ndarray] = deque(maxlen=self.stability_frames)
         self.frame_votes: Deque[str] = deque(maxlen=self.stability_frames)
 
@@ -183,14 +189,24 @@ class TrackedFace:
         return ((left + right) * 0.5, (top + bottom) * 0.5)
 
     @property
+    def predicted_center(self) -> Tuple[float, float]:
+        cx, cy = self.center
+        return (cx + self.vx, cy + self.vy)
+
+    @property
     def width(self) -> int:
         top, right, bottom, left = self.box_full
         return max(1, right - left)
 
-    def update_box_smooth(self, new_box: Tuple[int, int, int, int], alpha: float = 0.68) -> None:
-        """Smooth bounding box coordinates across frames while resetting missed-frame counter."""
+    def update_box_smooth(self, new_box: Tuple[int, int, int, int], alpha: float = 0.78) -> None:
+        """Smooth bounding box coordinates and update walking velocity across frames."""
+        ocx, ocy = self.center
         pt, pr, pb, pl = self.box_full
         nt, nr, nb, nl = new_box
+        ncx = (nl + nr) * 0.5
+        ncy = (nt + nb) * 0.5
+        self.vx = 0.65 * (ncx - ocx) + 0.35 * self.vx
+        self.vy = 0.65 * (ncy - ocy) + 0.35 * self.vy
         self.box_full = (
             int(round(alpha * nt + (1.0 - alpha) * pt)),
             int(round(alpha * nr + (1.0 - alpha) * pr)),
@@ -198,6 +214,34 @@ class TrackedFace:
             int(round(alpha * nl + (1.0 - alpha) * pl)),
         )
         self.missed_frames = 0
+
+    def advance_tracked_frame(self, now_ts: float) -> bool:
+        """
+        Advance the 7-frame stability counter on each tracked camera frame (~45 FPS)
+        once the background encoder has verified a candidate match.
+        - Strong matches (`distance <= 0.38`) or multi-encoded matches (`verified_encodings_count >= 2`)
+          can advance all the way to `7/7` at camera frame rate (~0.20-0.30s for walking students).
+        - Borderline matches (`distance > 0.38` with only 1 encoding) cap at `6/7` until a 2nd
+          independent 128-d encoding confirms the same student.
+        """
+        if self.label == "Unknown":
+            if self.candidate_label == "Unknown":
+                self.pre_encoded_track_frames = min(4, self.pre_encoded_track_frames + 1)
+                return False
+
+            if (now_ts - self.last_encoded_ts) <= 0.65:
+                if self.distance <= 0.38 or self.verified_encodings_count >= 2:
+                    self.stable_frames = min(self.stability_frames, self.stable_frames + 1)
+                    if self.stable_frames >= self.stability_frames:
+                        self.label = self.candidate_label
+                        self.challenger_label = "Unknown"
+                        self.challenger_frames = 0
+                        return True
+                else:
+                    # Wait at (stability_frames - 1) until 2nd encoding verifies borderline match
+                    cap = max(1, self.stability_frames - 1)
+                    self.stable_frames = min(cap, self.stable_frames + 1)
+        return False
 
     def get_smoothed_encoding(self, new_enc: np.ndarray) -> np.ndarray:
         """
@@ -234,15 +278,23 @@ class TrackedFace:
         # Case 1: Not yet confirmed (building up to 7 stable frames)
         if self.label == "Unknown":
             if matched_id != "Unknown":
+                bonus = min(3, self.pre_encoded_track_frames) if dist_score <= 0.38 else 0
+                self.pre_encoded_track_frames = 0
+
                 if matched_id == self.candidate_label:
+                    self.verified_encodings_count += 1
                     self.encoding_history.append(encoding)
-                    self.stable_frames = min(self.stability_frames, self.stable_frames + 1)
+                    self.stable_frames = min(self.stability_frames, self.stable_frames + 1 + bonus)
                 else:
                     # Switched candidate: require a fresh 7-frame streak for the new candidate
                     self.candidate_label = matched_id
-                    self.stable_frames = 1
+                    self.verified_encodings_count = 1
                     self.encoding_history.clear()
                     self.encoding_history.append(encoding)
+                    if bonus > 0 and self.stability_frames > 1:
+                        self.stable_frames = min(self.stability_frames - 1, 1 + bonus)
+                    else:
+                        self.stable_frames = 1
 
                 if self.stable_frames >= self.stability_frames:
                     self.label = self.candidate_label
@@ -254,6 +306,7 @@ class TrackedFace:
                 self.stable_frames = max(0, self.stable_frames - 1)
                 if self.stable_frames == 0:
                     self.candidate_label = "Unknown"
+                    self.verified_encodings_count = 0
                     self.encoding_history.clear()
             return False
 
@@ -347,6 +400,8 @@ class VisionEngine:
         self._running = False
         self._capture_thread: Optional[threading.Thread] = None
         self._vision_thread: Optional[threading.Thread] = None
+        self._encoder_thread: Optional[threading.Thread] = None
+        self._encode_event = threading.Event()
 
         self._latest_raw_frame: Optional[np.ndarray] = None
         self._latest_jpeg: Optional[bytes] = None
@@ -373,6 +428,8 @@ class VisionEngine:
         self.faces_dir.mkdir(parents=True, exist_ok=True)
         self.sync_folder_to_array(force=False)
         self.load_known_faces()
+        if self.face_data_file == FACE_DATA_FILE and hasattr(self.store, "register_faces_updated_callback"):
+            self.store.register_faces_updated_callback(self.load_known_faces)
 
     def _init_yunet_detector(self) -> None:
         """Initialize OpenCV YuNet deep face detector for long-distance school detection."""
@@ -386,7 +443,7 @@ class VisionEngine:
                 str(YUNET_MODEL_PATH),
                 "",
                 (640, 480),
-                0.55,  # Balanced confidence to avoid wall-art false positives while catching distant faces
+                0.45,  # Fast early detection for walking/distant students with slight motion blur
                 0.3,
                 5000,
             )
@@ -464,13 +521,13 @@ class VisionEngine:
 
     def _detect_faces_full_frame(self, frame_bgr: np.ndarray) -> List[Tuple[int, int, int, int]]:
         """
-        Detect faces across the FULL resolution frame so students standing far away
-        (2m - 6m from the camera) are detected reliably.
+        Detect faces across the FULL resolution frame so students standing or walking far away
+        (0.3m - 6m from the camera) are detected immediately upon entering the camera view.
         Returns list of (top, right, bottom, left) in full-frame pixel coordinates.
         """
         detections = self._detect_faces_with_landmarks(frame_bgr)
-        # Filter out extreme 90-degree 1-eye profile false/unalignable boxes (eye_ratio < 0.16)
-        return [box for (box, _score, eye_ratio) in detections if eye_ratio >= 0.16]
+        # Filter out extreme 90-degree 1-eye profile false/unalignable boxes (eye_ratio < 0.14)
+        return [box for (box, _score, eye_ratio) in detections if eye_ratio >= 0.14]
 
     def _encode_face_box(
         self,
@@ -663,7 +720,7 @@ class VisionEngine:
             return len(self.known_person_arrays)
 
         face_data = _load_face_data(self.face_data_file)
-        updated = False
+        updated_labels: List[str] = []
 
         for label, img_paths in grouped_images.items():
             existing = face_data.get(label, [])
@@ -686,7 +743,7 @@ class VisionEngine:
                 raw_vecs = [np.array(v[:128], dtype=np.float64) for v in extracted_arrays]
                 clean_vecs, _ = _filter_and_dedup_person_arrays(raw_vecs)
                 face_data[label] = [np.round(v, 6).tolist() for v in clean_vecs]
-                updated = True
+                updated_labels.append(label)
                 logger.info(
                     "Imported %d clean array(s) (from %d image(s)) for '%s'",
                     len(clean_vecs),
@@ -694,18 +751,37 @@ class VisionEngine:
                     label,
                 )
 
-        if updated:
+        if updated_labels:
             _save_face_data(self.face_data_file, face_data)
             self.load_known_faces()
+            if self.face_data_file == FACE_DATA_FILE and supabase_manager.is_configured:
+                push_items = [
+                    (sid, self.store.get_person_m(sid), self.store.get_person_name(sid), face_data[sid])
+                    for sid in updated_labels
+                    if face_data.get(sid)
+                ]
+                if push_items:
+                    def _sync_new_faces() -> None:
+                        for sid, m_val, s_name, samples in push_items:
+                            supabase_manager.upsert_record(
+                                id_name=sid,
+                                m=m_val,
+                                array_faceshape=samples,
+                                append_sample=False,
+                                name_student=s_name,
+                            )
+                        self.store.sync_attendance_with_supabase()
+
+                    threading.Thread(target=_sync_new_faces, daemon=True).start()
 
         return len(self.known_person_arrays)
 
     def load_known_faces(self) -> int:
         """Load face arrays from face_data.json into memory, filtering outliers & deduplicating."""
-        self.known_person_arrays.clear()
-        self.known_person_centroids.clear()
-        self.known_face_encodings.clear()
-        self.known_student_ids.clear()
+        new_person_arrays: Dict[str, List[np.ndarray]] = {}
+        new_person_centroids: Dict[str, np.ndarray] = {}
+        new_face_encodings: List[np.ndarray] = []
+        new_student_ids: List[str] = []
 
         face_data = _load_face_data(self.face_data_file)
         for student_id, encodings_list in face_data.items():
@@ -718,13 +794,17 @@ class VisionEngine:
 
             if raw_vecs:
                 clean_vecs, centroid = _filter_and_dedup_person_arrays(raw_vecs)
-                self.known_person_arrays[student_id] = clean_vecs
+                new_person_arrays[student_id] = clean_vecs
                 if centroid is not None:
-                    self.known_person_centroids[student_id] = centroid
+                    new_person_centroids[student_id] = centroid
                 for arr in clean_vecs:
-                    self.known_face_encodings.append(arr)
-                    self.known_student_ids.append(student_id)
+                    new_face_encodings.append(arr)
+                    new_student_ids.append(student_id)
 
+        self.known_person_arrays = new_person_arrays
+        self.known_person_centroids = new_person_centroids
+        self.known_face_encodings = new_face_encodings
+        self.known_student_ids = new_student_ids
         return len(self.known_person_arrays)
 
     def extract_faceshape_from_current_frame(self) -> Optional[List[float]]:
@@ -751,6 +831,7 @@ class VisionEngine:
         m: str,
         array_faceshape: List[List[float]],
         append_sample: bool = False,
+        full_name: Optional[str] = None,
     ) -> List[List[float]]:
         """
         Save `(id_name, m, array_faceshape)` into local `face_data.json` and `AttendanceStore`,
@@ -758,6 +839,7 @@ class VisionEngine:
         """
         sid = str(id_name).strip()
         m_clean = str(m or "").strip() or "-"
+        name_clean = str(full_name).strip() if full_name is not None else None
         new_samples = parse_faceshape_to_samples(array_faceshape)
         if not sid or not new_samples:
             return []
@@ -771,7 +853,7 @@ class VisionEngine:
         face_data[sid] = combined
         _save_face_data(self.face_data_file, face_data)
 
-        self.store.register_person(sid, classroom=m_clean)
+        self.store.register_person(sid, full_name=name_clean or None, classroom=m_clean)
         self.load_known_faces()
         self.last_seen.pop(sid, None)
         return combined
@@ -790,6 +872,7 @@ class VisionEngine:
                 m=m_val,
                 array_faceshape=samples,
                 append_sample=False,
+                name_student=self.store.get_person_name(sid),
             )
             if ok:
                 pushed_count += 1
@@ -802,6 +885,7 @@ class VisionEngine:
         student_id: str,
         frame: Optional[np.ndarray] = None,
         m: str = "-",
+        full_name: Optional[str] = None,
     ) -> bool:
         """
         Capture current frame (works at close range OR at a distance!),
@@ -855,7 +939,8 @@ class VisionEngine:
 
             # 3. Update folder signature and reload arrays into memory
             self._last_folder_signature = self._compute_folder_signature()
-            self.store.register_person(student_id, classroom=m_clean)
+            name_clean = str(full_name).strip() if full_name is not None else ""
+            self.store.register_person(student_id, full_name=name_clean or None, classroom=m_clean)
             self.load_known_faces()
             self.last_seen.pop(student_id, None)
 
@@ -867,7 +952,11 @@ class VisionEngine:
                     m=resolved_m,
                     array_faceshape=current_arrays,
                     append_sample=False,
+                    name_student=self.store.get_person_name(student_id),
                 )
+                roster_row = self.store._roster.get(student_id)
+                if roster_row:
+                    supabase_manager.sync_students([roster_row])
 
             # 5. Update tracked face label immediately
             top, right, bottom, left = target_box
@@ -904,6 +993,7 @@ class VisionEngine:
         image_bytes: bytes,
         m: str = "-",
         append_sample: bool = True,
+        full_name: Optional[str] = None,
     ) -> bool:
         try:
             student_id = str(student_id).strip()
@@ -939,7 +1029,8 @@ class VisionEngine:
             _save_face_data(self.face_data_file, face_data)
 
             self._last_folder_signature = self._compute_folder_signature()
-            self.store.register_person(student_id, classroom=m_clean)
+            name_clean = str(full_name).strip() if full_name is not None else ""
+            self.store.register_person(student_id, full_name=name_clean or None, classroom=m_clean)
             self.load_known_faces()
             self.last_seen.pop(student_id, None)
 
@@ -950,7 +1041,11 @@ class VisionEngine:
                     m=resolved_m,
                     array_faceshape=current_list,
                     append_sample=False,
+                    name_student=self.store.get_person_name(student_id),
                 )
+                roster_row = self.store._roster.get(student_id)
+                if roster_row:
+                    supabase_manager.sync_students([roster_row])
 
             return True
         except Exception as exc:
@@ -958,6 +1053,101 @@ class VisionEngine:
             return False
 
     save_uploaded_student_picture = register_face_from_upload
+
+    def update_student_identity(
+        self,
+        old_id_name: str,
+        new_id_name: str,
+        full_name: Optional[str] = None,
+        m: str = "-",
+    ) -> Tuple[bool, str, Optional[str]]:
+        """
+        Update a student's `id_name`, `full_name`, and grade/classroom `m` locally
+        (face_data.json, faces/, face_meta.json, AttendanceStore) and in Supabase.
+        Returns `(ok, message, supabase_error)`.
+        """
+        old_sid = str(old_id_name or "").strip()
+        new_sid = str(new_id_name or "").strip()
+        m_clean = str(m or "").strip() or "-"
+        name_clean = str(full_name or "").strip()
+
+        if not old_sid or not new_sid:
+            return False, "กรุณาระบุรหัสนักเรียน (id_name)", None
+
+        face_data = _load_face_data(self.face_data_file)
+        if old_sid != new_sid and (new_sid in face_data or new_sid in self.store._roster):
+            return False, f"มีข้อมูลรหัส '{new_sid}' อยู่ในระบบแล้ว กรุณาใช้รหัสอื่น", None
+
+        samples = face_data.get(old_sid, [])
+        if old_sid != new_sid and old_sid in face_data:
+            face_data[new_sid] = face_data.pop(old_sid)
+            _save_face_data(self.face_data_file, face_data)
+
+        if old_sid != new_sid:
+            old_dir = self.faces_dir / old_sid
+            new_dir = self.faces_dir / new_sid
+            if old_dir.exists() and not new_dir.exists():
+                try:
+                    old_dir.rename(new_dir)
+                except OSError as exc:
+                    logger.warning("Failed to rename folder %s -> %s: %s", old_dir, new_dir, exc)
+
+            for ext in (".jpg", ".jpeg", ".png", ".webp"):
+                old_file = self.faces_dir / f"{old_sid}{ext}"
+                new_file = self.faces_dir / f"{new_sid}{ext}"
+                if old_file.exists() and not new_file.exists():
+                    try:
+                        old_file.rename(new_file)
+                    except OSError as exc:
+                        logger.warning("Failed to rename file %s -> %s: %s", old_file, new_file, exc)
+
+            if old_sid in self.last_seen:
+                self.last_seen[new_sid] = self.last_seen.pop(old_sid)
+
+        self.store.rename_or_update_person(
+            old_student_id=old_sid,
+            new_student_id=new_sid,
+            full_name=name_clean or None,
+            classroom=m_clean,
+        )
+        self._last_folder_signature = self._compute_folder_signature()
+        self.load_known_faces()
+
+        if old_sid != new_sid:
+            with self._track_lock:
+                for tf in self._tracked_faces:
+                    if tf.label == old_sid:
+                        tf.label = new_sid
+                    if tf.candidate_label == old_sid:
+                        tf.candidate_label = new_sid
+
+        resolved_name = self.store.get_person_name(new_sid)
+        resolved_m = self.store.get_person_m(new_sid)
+
+        sb_err: Optional[str] = None
+        if self.face_data_file == FACE_DATA_FILE and supabase_manager.is_configured:
+            ok_sb, err_sb = supabase_manager.update_student_profile(
+                old_id_name=old_sid,
+                new_id_name=new_sid,
+                full_name=resolved_name,
+                classroom=resolved_m,
+                samples=samples or None,
+            )
+            if not ok_sb:
+                sb_err = err_sb
+
+        if sb_err:
+            return (
+                True,
+                f"แก้ไขข้อมูลในเครื่อง '{resolved_name}' ({new_sid}) แล้ว แต่ซิงค์ Supabase ไม่สำเร็จ: {sb_err}",
+                sb_err,
+            )
+
+        return (
+            True,
+            f"อัปเดตข้อมูล '{resolved_name}' ({new_sid}, ชั้น {resolved_m}) เรียบร้อยและซิงค์ขึ้น Supabase แล้ว!",
+            None,
+        )
 
     def delete_face_data(self, student_id: str) -> bool:
         student_id = str(student_id).strip()
@@ -1104,8 +1294,10 @@ class VisionEngine:
 
     def _vision_worker_loop(self) -> None:
         """
-        Dedicated background thread for Long-Distance Face Detection, Similar-Array Disambiguation,
-        and 7-Frame Temporal Stability (`self.stability_frames = 7`).
+        High-speed (~45-60 FPS) face detection & walking tracker loop.
+        Runs OpenCV YuNet (~15ms) and velocity-predicted bounding box tracking without
+        blocking on 128-d dlib encoding, so walking students are detected the instant they
+        enter the frame and reach 7-frame stability at camera frame rate (~0.25-0.35s).
         """
         while self._running:
             now_ts = time.monotonic()
@@ -1120,11 +1312,11 @@ class VisionEngine:
                 frame = self._latest_raw_frame.copy() if self._latest_raw_frame is not None else None
 
             if frame is None or not FACE_RECOGNITION_AVAILABLE:
-                time.sleep(0.03)
+                time.sleep(0.02)
                 continue
 
             try:
-                # 1. Detect faces at ANY distance on full-resolution frame (~7ms with YuNet)
+                # 1. Fast full-frame YuNet face detection (~15ms)
                 boxes_full = self._detect_faces_full_frame(frame)
 
                 if not boxes_full:
@@ -1135,7 +1327,7 @@ class VisionEngine:
                             if tf.missed_frames <= MAX_MISSED_TRACK_FRAMES:
                                 kept_tracks.append(tf)
                         self._tracked_faces = kept_tracks
-                    time.sleep(0.02)
+                    time.sleep(0.012)
                     continue
 
                 with self._track_lock:
@@ -1143,13 +1335,16 @@ class VisionEngine:
 
                 new_tracked: List[TrackedFace] = []
                 used_old = set()
-                boxes_to_encode: List[Tuple[int, Tuple[int, int, int, int]]] = []
+                any_needs_encoding = False
+                newly_confirmed_labels: List[str] = []
 
-                for idx_box, box_full in enumerate(boxes_full):
+                for box_full in boxes_full:
                     top, right, bottom, left = box_full
                     cx = (left + right) * 0.5
                     cy = (top + bottom) * 0.5
                     box_w = max(right - left, 24)
+                    # Wider association radius + velocity prediction so walking students never lose track
+                    assoc_radius = max(box_w * 1.65, 110.0)
 
                     best_old_idx = -1
                     best_dist = float("inf")
@@ -1157,8 +1352,12 @@ class VisionEngine:
                         if o_idx in used_old:
                             continue
                         ocx, ocy = old_tf.center
-                        d = math.hypot(cx - ocx, cy - ocy)
-                        if d < best_dist and d < max(box_w * 0.90, 50.0):
+                        pcx, pcy = old_tf.predicted_center
+                        d = min(
+                            math.hypot(cx - ocx, cy - ocy),
+                            math.hypot(cx - pcx, cy - pcy),
+                        )
+                        if d < best_dist and d < assoc_radius:
                             best_dist = d
                             best_old_idx = o_idx
 
@@ -1167,6 +1366,8 @@ class VisionEngine:
                         tf = old_tracked[best_old_idx]
                         tf.stability_frames = self.stability_frames
                         tf.update_box_smooth(box_full)
+                        if tf.advance_tracked_frame(now_ts) and tf.label != "Unknown":
+                            newly_confirmed_labels.append(tf.label)
                     else:
                         tf = TrackedFace(
                             box_full=box_full,
@@ -1175,83 +1376,158 @@ class VisionEngine:
                             last_encoded_ts=0.0,
                             stability_frames=self.stability_frames,
                         )
+                        tf.pre_encoded_track_frames = 1
 
                     new_tracked.append(tf)
 
-                    # Encode every frame while building 7-frame stability (or resolving a challenger),
-                    # and re-verify every 0.45s once already confirmed across 7 frames.
                     needs_encoding = (
                         not tf.is_stable
                         or tf.challenger_frames > 0
                         or (now_ts - tf.last_encoded_ts) > 0.45
                     )
                     if self.known_person_arrays and needs_encoding:
-                        boxes_to_encode.append((idx_box, box_full))
+                        any_needs_encoding = True
 
-                # Keep any recently tracked face that momentarily missed 1-3 detector frames
+                # Keep any recently tracked face that momentarily missed 1-5 detector frames while walking
                 for o_idx, old_tf in enumerate(old_tracked):
                     if o_idx not in used_old:
                         old_tf.missed_frames += 1
                         if old_tf.missed_frames <= MAX_MISSED_TRACK_FRAMES:
                             ocx, ocy = old_tf.center
                             overlaps_new = any(
-                                math.hypot(ocx - tf.center[0], ocy - tf.center[1]) < max(tf.width * 0.7, 40.0)
+                                math.hypot(ocx - tf.center[0], ocy - tf.center[1]) < max(tf.width * 0.75, 45.0)
                                 for tf in new_tracked
                             )
                             if not overlaps_new:
                                 new_tracked.append(old_tf)
 
-                # Immediately publish updated bounding boxes so labels move smoothly at 30 FPS
+                # Immediately publish updated bounding boxes so labels move smoothly at 45+ FPS
                 with self._track_lock:
                     self._tracked_faces = new_tracked
 
-                # 2. Extract 128-d array and update 7-frame stability state
-                if boxes_to_encode and self.known_person_arrays:
-                    enc_ts = time.monotonic()
-                    for target_idx, box_full in boxes_to_encode:
-                        if target_idx >= len(new_tracked):
-                            continue
-                        tf = new_tracked[target_idx]
-                        enc = self._encode_face_box(frame, box_full)
-                        if enc is None:
-                            continue
+                for confirmed_id in newly_confirmed_labels:
+                    self.record_detection(confirmed_id)
 
-                        face_w = max(1, box_full[1] - box_full[3])
-                        raw_id, raw_score = self._match_encoding(enc, face_width_px=face_w)
-
-                        # Temporal smoothing across up to 7 frames in `tf.encoding_history`
-                        smooth_enc = tf.get_smoothed_encoding(enc)
-                        smooth_id, smooth_score = self._match_encoding(smooth_enc, face_width_px=face_w)
-
-                        if raw_id != "Unknown" and smooth_id == raw_id:
-                            matched_id = raw_id
-                            dist_score = min(raw_score, smooth_score)
-                        elif raw_id != "Unknown" and len(tf.encoding_history) == 0:
-                            matched_id = raw_id
-                            dist_score = raw_score
-                        elif raw_id != "Unknown" and raw_score <= 0.33:
-                            matched_id = raw_id
-                            dist_score = raw_score
-                        else:
-                            matched_id = "Unknown"
-                            dist_score = 1.0
-
-                        confirmed = tf.record_frame_match(
-                            matched_id=matched_id,
-                            dist_score=dist_score,
-                            encoding=enc,
-                            now_ts=enc_ts,
+                # Wake parallel 128-d encoder thread immediately if any face needs verification
+                if any_needs_encoding:
+                    if self._encoder_thread is None or not self._encoder_thread.is_alive():
+                        self._encoder_thread = threading.Thread(
+                            target=self._encoder_worker_loop,
+                            daemon=True,
                         )
-                        if confirmed and tf.label != "Unknown":
-                            self.record_detection(tf.label)
-
-                    with self._track_lock:
-                        self._tracked_faces = new_tracked
+                        self._encoder_thread.start()
+                    self._encode_event.set()
 
             except Exception as exc:
                 logger.debug("Vision worker iteration error: %s", exc)
 
-            time.sleep(0.015)
+            time.sleep(0.008)
+
+    def _encoder_worker_loop(self) -> None:
+        """
+        Dedicated parallel background thread for 128-d dlib ResNet face encoding &
+        similar-array disambiguation. Runs asynchronously so `_vision_worker_loop`
+        never stalls while a student is walking across the camera frame.
+        """
+        while self._running:
+            self._encode_event.wait(timeout=0.05)
+            self._encode_event.clear()
+            if not self._running:
+                break
+
+            if not self.known_person_arrays or not FACE_RECOGNITION_AVAILABLE:
+                continue
+
+            with self._frame_lock:
+                frame = self._latest_raw_frame.copy() if self._latest_raw_frame is not None else None
+            if frame is None:
+                continue
+
+            now_ts = time.monotonic()
+            with self._track_lock:
+                # Prioritize unconfirmed faces first so walking students verify immediately
+                candidates_to_encode: List[Tuple[TrackedFace, Tuple[int, int, int, int]]] = []
+                for tf in self._tracked_faces:
+                    if tf.missed_frames > 0:
+                        continue
+                    needs_enc = (
+                        not tf.is_stable
+                        or tf.challenger_frames > 0
+                        or (now_ts - tf.last_encoded_ts) > 0.45
+                    )
+                    if needs_enc:
+                        candidates_to_encode.append((tf, tf.box_full))
+
+                candidates_to_encode.sort(
+                    key=lambda item: (
+                        0 if not item[0].is_stable else 1,
+                        item[0].last_encoded_ts,
+                    )
+                )
+
+            for tf, box_full in candidates_to_encode:
+                if not self._running:
+                    break
+                try:
+                    # Grab the freshest frame and latest tracked box for this face before encoding
+                    with self._frame_lock:
+                        latest_frame = (
+                            self._latest_raw_frame.copy()
+                            if self._latest_raw_frame is not None
+                            else frame
+                        )
+                    with self._track_lock:
+                        if tf not in self._tracked_faces:
+                            continue
+                        current_box = tf.box_full
+
+                    enc = self._encode_face_box(latest_frame, current_box)
+                    if enc is None:
+                        continue
+
+                    enc_ts = time.monotonic()
+                    face_w = max(1, current_box[1] - current_box[3])
+                    raw_id, raw_score = self._match_encoding(enc, face_width_px=face_w)
+
+                    with self._track_lock:
+                        if tf not in self._tracked_faces:
+                            continue
+                        smooth_enc = tf.get_smoothed_encoding(enc)
+
+                    smooth_id, smooth_score = self._match_encoding(smooth_enc, face_width_px=face_w)
+
+                    if raw_id != "Unknown" and smooth_id == raw_id:
+                        matched_id = raw_id
+                        dist_score = min(raw_score, smooth_score)
+                    elif raw_id != "Unknown" and len(tf.encoding_history) == 0:
+                        matched_id = raw_id
+                        dist_score = raw_score
+                    elif raw_id != "Unknown" and raw_score <= 0.34:
+                        matched_id = raw_id
+                        dist_score = raw_score
+                    elif smooth_id != "Unknown" and smooth_score <= 0.35:
+                        matched_id = smooth_id
+                        dist_score = smooth_score
+                    else:
+                        matched_id = "Unknown"
+                        dist_score = 1.0
+
+                    confirmed_label: Optional[str] = None
+                    with self._track_lock:
+                        if tf in self._tracked_faces:
+                            confirmed = tf.record_frame_match(
+                                matched_id=matched_id,
+                                dist_score=dist_score,
+                                encoding=enc,
+                                now_ts=enc_ts,
+                            )
+                            if confirmed and tf.label != "Unknown":
+                                confirmed_label = tf.label
+
+                    if confirmed_label:
+                        self.record_detection(confirmed_label)
+                except Exception as exc:
+                    logger.debug("Encoder worker error: %s", exc)
 
     def _draw_annotations(
         self, frame: np.ndarray
@@ -1282,6 +1558,10 @@ class VisionEngine:
             elif is_stabilizing:
                 color = (235, 168, 14)  # Cyan/Amber: stabilizing across 7 frames
                 label_text = f"Verifying... ({tf.stable_frames}/{tf.stability_frames})"
+            elif tf.last_encoded_ts == 0.0 and tf.pre_encoded_track_frames > 0 and self.known_person_arrays:
+                color = (235, 168, 14)  # Cyan/Amber: initial fast verification in progress
+                prog = min(tf.pre_encoded_track_frames, max(1, tf.stability_frames - 1))
+                label_text = f"Verifying... ({prog}/{tf.stability_frames})"
             else:
                 color = (0, 165, 255)  # Orange: Unknown
                 label_text = "Unknown"
@@ -1358,16 +1638,21 @@ class VisionEngine:
         self._running = True
         self._vision_thread = threading.Thread(target=self._vision_worker_loop, daemon=True)
         self._vision_thread.start()
+        self._encoder_thread = threading.Thread(target=self._encoder_worker_loop, daemon=True)
+        self._encoder_thread.start()
         self._capture_thread = threading.Thread(target=self._capture_loop, daemon=True)
         self._capture_thread.start()
-        logger.info("VisionEngine started (Long-Distance YuNet + Lanczos Upscale Array Encoder).")
+        logger.info("VisionEngine started (Fast 45+ FPS Walking Tracker + Parallel 128-d Array Encoder).")
 
     def stop_background_capture(self) -> None:
         self._running = False
+        self._encode_event.set()
         if self._capture_thread and self._capture_thread.is_alive():
             self._capture_thread.join(timeout=2.0)
         if self._vision_thread and self._vision_thread.is_alive():
             self._vision_thread.join(timeout=2.0)
+        if self._encoder_thread and self._encoder_thread.is_alive():
+            self._encoder_thread.join(timeout=2.0)
 
     def switch_camera(self, new_index: int) -> bool:
         new_index = int(new_index)
@@ -1436,6 +1721,9 @@ class VisionEngine:
             self._running = True
             self._vision_thread = threading.Thread(target=self._vision_worker_loop, daemon=True)
             self._vision_thread.start()
+        if self._encoder_thread is None or not self._encoder_thread.is_alive():
+            self._encoder_thread = threading.Thread(target=self._encoder_worker_loop, daemon=True)
+            self._encoder_thread.start()
 
         cap = self._open_camera_pc()
         if not cap.isOpened():
@@ -1539,6 +1827,7 @@ class VisionEngine:
             )
             array_previews[sid] = {
                 "id_name": sid,
+                "full_name": self.store.get_person_name(sid),
                 "m": self.store.get_person_m(sid),
                 "samples": len(enc_list),
                 "saved_pics": saved_pics,

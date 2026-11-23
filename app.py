@@ -51,6 +51,8 @@ class SimulateScanRequest(BaseModel):
 
 class SupabaseRecordRequest(BaseModel):
     id_name: str
+    full_name: Optional[str] = None
+    name_student: Optional[str] = None
     m: str = "-"
     array_faceshape: Optional[Any] = None
     append_sample: bool = False
@@ -59,6 +61,13 @@ class SupabaseRecordRequest(BaseModel):
 
 class SupabaseSyncRequest(BaseModel):
     push_local: bool = False
+
+
+class StudentUpdateRequest(BaseModel):
+    id_name: str
+    full_name: Optional[str] = None
+    name_student: Optional[str] = None
+    m: str = "-"
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -130,12 +139,17 @@ async def get_student_pic(student_id: str):
 async def api_register_face(
     student_id: str,
     m: str = Query(default="-", description="Grade/classroom level (e.g. ม.1 - ม.6, ม.4/1)"),
+    full_name: Optional[str] = Query(default=None, description="Student display name (name_student)"),
+    name_student: Optional[str] = Query(default=None, description="Alias for full_name"),
 ):
     """
     Capture the person's face from camera, save to faces/<student_id>/,
     extract 128-d Face-Shape Array, and sync (id_name, m, array_faceshape) to Supabase.
     """
-    ok = await asyncio.to_thread(vision_engine.register_face_from_frame, student_id, None, m)
+    resolved_name = (full_name or name_student or "").strip() or None
+    ok = await asyncio.to_thread(
+        vision_engine.register_face_from_frame, student_id, None, m, resolved_name
+    )
     if not ok:
         return JSONResponse(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -147,8 +161,9 @@ async def api_register_face(
     return {
         "success": True,
         "student_id": student_id,
+        "full_name": attendance_store.get_person_name(student_id),
         "m": attendance_store.get_person_m(student_id),
-        "message": f"บันทึกใบหน้า '{student_id}' (ชั้น {attendance_store.get_person_m(student_id)}) และแปลงเป็น array_faceshape สำเร็จ!",
+        "message": f"บันทึกใบหน้า '{attendance_store.get_person_name(student_id)}' ({student_id}, ชั้น {attendance_store.get_person_m(student_id)}) และแปลงเป็น array_faceshape สำเร็จ!",
         "vision": vision_engine.get_status(),
         "supabase": supabase_manager.get_status(),
     }
@@ -161,6 +176,10 @@ async def api_upload_face(
     file: UploadFile = File(...),
     m: str = Form(default="-"),
     m_query: Optional[str] = Query(default=None, alias="m"),
+    full_name: Optional[str] = Form(default=None),
+    full_name_query: Optional[str] = Query(default=None, alias="full_name"),
+    name_student: Optional[str] = Form(default=None),
+    name_student_query: Optional[str] = Query(default=None, alias="name_student"),
     append_sample: bool = Form(default=True),
 ):
     """
@@ -168,6 +187,10 @@ async def api_upload_face(
     and sync (id_name, m, array_faceshape) to Supabase.
     """
     resolved_m = m_query if (m_query and m_query != "-") else m
+    resolved_name = (
+        (full_name_query or name_student_query or full_name or name_student or "").strip()
+        or None
+    )
     image_bytes = await file.read()
     ok = await asyncio.to_thread(
         vision_engine.register_face_from_upload,
@@ -175,6 +198,7 @@ async def api_upload_face(
         image_bytes,
         resolved_m,
         append_sample,
+        resolved_name,
     )
     if not ok:
         return JSONResponse(
@@ -187,8 +211,9 @@ async def api_upload_face(
     return {
         "success": True,
         "student_id": student_id,
+        "full_name": attendance_store.get_person_name(student_id),
         "m": attendance_store.get_person_m(student_id),
-        "message": f"อัปโหลดรูปภาพ '{student_id}' และแปลงเป็น array_faceshape เรียบร้อย",
+        "message": f"อัปโหลดรูปภาพ '{attendance_store.get_person_name(student_id)}' ({student_id}) และแปลงเป็น array_faceshape เรียบร้อย",
         "vision": vision_engine.get_status(),
         "supabase": supabase_manager.get_status(),
     }
@@ -288,6 +313,7 @@ async def api_get_supabase_records():
         sid = rec["id_name"]
         merged_map[sid] = {
             **rec,
+            "full_name": attendance_store.get_person_name(sid),
             "synced_supabase": True,
             "in_local": sid in local_previews,
             "saved_pics": local_previews.get(sid, {}).get("saved_pics", 0),
@@ -298,6 +324,7 @@ async def api_get_supabase_records():
             samples = lrec.get("array_faceshape", [])
             merged_map[sid] = {
                 "id_name": sid,
+                "full_name": lrec.get("full_name") or attendance_store.get_person_name(sid),
                 "m": lrec.get("m") or attendance_store.get_person_m(sid),
                 "array_faceshape": samples,
                 "samples_count": lrec.get("samples", len(samples)),
@@ -329,15 +356,18 @@ async def api_save_supabase_record(payload: SupabaseRecordRequest):
     """
     id_name = payload.id_name.strip()
     m_val = (payload.m or "-").strip() or "-"
+    resolved_name = (payload.full_name or payload.name_student or "").strip() or None
 
     if not id_name:
         return JSONResponse(
             status_code=status.HTTP_400_BAD_REQUEST,
-            content={"success": False, "message": "กรุณาระบุ id_name (รหัสหรือชื่อ-นามสกุล)"},
+            content={"success": False, "message": "กรุณาระบุ id_name (รหัสนักเรียน)"},
         )
 
     if payload.capture_from_camera and not payload.array_faceshape:
-        ok_cap = await asyncio.to_thread(vision_engine.register_face_from_frame, id_name, None, m_val)
+        ok_cap = await asyncio.to_thread(
+            vision_engine.register_face_from_frame, id_name, None, m_val, resolved_name
+        )
         if not ok_cap:
             return JSONResponse(
                 status_code=status.HTTP_400_BAD_REQUEST,
@@ -346,14 +376,16 @@ async def api_save_supabase_record(payload: SupabaseRecordRequest):
                     "message": "ไม่พบใบหน้าในกล้องสด กรุณาหันหน้าเข้าหากล้องให้ชัดเจน",
                 },
             )
+        saved_name = attendance_store.get_person_name(id_name)
         return {
             "success": True,
             "id_name": id_name,
+            "full_name": saved_name,
             "m": m_val,
             "message": (
-                f"ถ่ายภาพและบันทึก '{id_name}' (ชั้น {m_val}) ลง Supabase และระบบตรวจจับเรียบร้อย!"
+                f"ถ่ายภาพและบันทึก '{saved_name}' ({id_name}, ชั้น {m_val}) ลง Supabase และระบบตรวจจับเรียบร้อย!"
                 if supabase_manager.is_configured
-                else f"ถ่ายภาพและบันทึก '{id_name}' (ชั้น {m_val}) ในเครื่องเรียบร้อย (ยังไม่ได้เชื่อมต่อ Supabase)"
+                else f"ถ่ายภาพและบันทึก '{saved_name}' ({id_name}, ชั้น {m_val}) ในเครื่องเรียบร้อย (ยังไม่ได้เชื่อมต่อ Supabase)"
             ),
             "supabase": supabase_manager.get_status(),
             "vision": vision_engine.get_status(),
@@ -361,13 +393,18 @@ async def api_save_supabase_record(payload: SupabaseRecordRequest):
 
     samples = parse_faceshape_to_samples(payload.array_faceshape)
     if not samples:
-        return JSONResponse(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            content={
-                "success": False,
-                "message": "ไม่พบค่า array_faceshape ที่ถูกต้อง (ต้องเป็นเวกเตอร์ 128 มิติ) — กรุณาดึงค่าจากกล้อง อัปโหลดรูป หรือวาง JSON Array",
-            },
-        )
+        # Allow updating name/classroom alone if student already has face arrays locally
+        existing_vecs = vision_engine.known_person_arrays.get(id_name)
+        if existing_vecs:
+            samples = [vec.tolist() for vec in existing_vecs]
+        else:
+            return JSONResponse(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                content={
+                    "success": False,
+                    "message": "ไม่พบค่า array_faceshape ที่ถูกต้อง (ต้องเป็นเวกเตอร์ 128 มิติ) — กรุณาดึงค่าจากกล้อง อัปโหลดรูป หรือวาง JSON Array",
+                },
+            )
 
     combined_local = await asyncio.to_thread(
         vision_engine.save_custom_faceshape_record,
@@ -375,6 +412,7 @@ async def api_save_supabase_record(payload: SupabaseRecordRequest):
         m_val,
         samples,
         payload.append_sample,
+        resolved_name,
     )
 
     if supabase_manager.is_configured:
@@ -384,7 +422,11 @@ async def api_save_supabase_record(payload: SupabaseRecordRequest):
             m_val,
             combined_local,
             False,
+            attendance_store.get_person_name(id_name),
         )
+        roster_row = attendance_store._roster.get(id_name)
+        if roster_row:
+            await asyncio.to_thread(supabase_manager.sync_students, [roster_row])
         if not ok_sb:
             return JSONResponse(
                 status_code=status.HTTP_400_BAD_REQUEST,
@@ -397,6 +439,7 @@ async def api_save_supabase_record(payload: SupabaseRecordRequest):
         return {
             "success": True,
             "id_name": id_name,
+            "full_name": attendance_store.get_person_name(id_name),
             "m": m_val,
             "samples_count": len(combined_local),
             "message": msg_sb,
@@ -408,11 +451,66 @@ async def api_save_supabase_record(payload: SupabaseRecordRequest):
     return {
         "success": True,
         "id_name": id_name,
+        "full_name": attendance_store.get_person_name(id_name),
         "m": m_val,
         "samples_count": len(combined_local),
-        "message": f"บันทึก '{id_name}' (ชั้น {m_val}, {len(combined_local)} ตัวอย่าง) ในเครื่องเรียบร้อย (ตั้งค่า Supabase เพื่อซิงค์ขึ้น Cloud)",
+        "message": f"บันทึก '{attendance_store.get_person_name(id_name)}' ({id_name}, ชั้น {m_val}, {len(combined_local)} ตัวอย่าง) ในเครื่องเรียบร้อย (ตั้งค่า Supabase เพื่อซิงค์ขึ้น Cloud)",
         "supabase": supabase_manager.get_status(),
         "vision": vision_engine.get_status(),
+    }
+
+
+@app.put("/api/students/{old_id_name}")
+@app.put("/api/supabase/records/{old_id_name}")
+async def api_update_student(old_id_name: str, payload: StudentUpdateRequest):
+    """Edit student `id_name`, `full_name` (`name_student`), and grade `m` locally and in Supabase."""
+    new_id = payload.id_name.strip()
+    m_val = (payload.m or "-").strip() or "-"
+    resolved_name = (payload.full_name or payload.name_student or "").strip() or None
+
+    if not new_id:
+        return JSONResponse(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            content={"success": False, "message": "กรุณาระบุรหัสนักเรียน (id_name)"},
+        )
+
+    ok, msg, sb_err = await asyncio.to_thread(
+        vision_engine.update_student_identity,
+        old_id_name,
+        new_id,
+        resolved_name,
+        m_val,
+    )
+    if not ok:
+        return JSONResponse(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            content={"success": False, "message": msg},
+        )
+    if sb_err:
+        return JSONResponse(
+            status_code=status.HTTP_200_OK,
+            content={
+                "success": True,
+                "supabase_warning": True,
+                "id_name": new_id,
+                "full_name": attendance_store.get_person_name(new_id),
+                "m": attendance_store.get_person_m(new_id),
+                "message": msg,
+                "supabase": supabase_manager.get_status(),
+                "vision": vision_engine.get_status(),
+                "metrics": attendance_store.get_public_metrics(),
+            },
+        )
+    return {
+        "success": True,
+        "supabase_warning": False,
+        "id_name": new_id,
+        "full_name": attendance_store.get_person_name(new_id),
+        "m": attendance_store.get_person_m(new_id),
+        "message": msg,
+        "supabase": supabase_manager.get_status(),
+        "vision": vision_engine.get_status(),
+        "metrics": attendance_store.get_public_metrics(),
     }
 
 
@@ -458,6 +556,7 @@ async def api_sync_supabase(payload: Optional[SupabaseSyncRequest] = None):
 
     pulled_ok = await asyncio.to_thread(attendance_store.sync_from_supabase)
     await asyncio.to_thread(vision_engine.load_known_faces)
+    await asyncio.to_thread(attendance_store.sync_attendance_with_supabase)
 
     if not pulled_ok and push_errors:
         return JSONResponse(

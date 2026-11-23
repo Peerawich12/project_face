@@ -174,29 +174,41 @@
                     </div>
                 </label>
 
-                <!-- Inputs: id_name & m -->
+                <!-- Inputs: id_name, full_name (name_student) & m -->
                 <div class="grid grid-cols-1 sm:grid-cols-12 gap-3">
-                    <div class="sm:col-span-7 space-y-1">
+                    <div class="sm:col-span-4 space-y-1">
                         <label for="modal-pic-id-name" class="block text-xs font-bold text-slate-800">
-                            รหัส / ชื่อ-นามสกุล (<code class="text-indigo-600 font-mono">id_name</code>) <span class="text-rose-500">*</span>
+                            รหัสนักเรียน (<code class="text-indigo-600 font-mono">id_name</code>) <span class="text-rose-500">*</span>
                         </label>
                         <input
                             id="modal-pic-id-name"
                             type="text"
-                            placeholder="เช่น 09627 หรือ สมชาย ใจดี"
+                            placeholder="เช่น 09627"
                             onkeydown="if(event.key==='Enter') submitQuickAddPictureModal()"
                             class="w-full text-xs sm:text-sm border border-slate-300 rounded-xl px-3 py-2 bg-white text-slate-900 focus:outline-none focus:ring-2 focus:ring-slate-900"
                         />
                     </div>
                     <div class="sm:col-span-5 space-y-1">
+                        <label for="modal-pic-full-name" class="block text-xs font-bold text-slate-800">
+                            ชื่อ-นามสกุล (<code class="text-indigo-600 font-mono">name_student</code>)
+                        </label>
+                        <input
+                            id="modal-pic-full-name"
+                            type="text"
+                            placeholder="เช่น นายสมชาย ใจดี"
+                            onkeydown="if(event.key==='Enter') submitQuickAddPictureModal()"
+                            class="w-full text-xs sm:text-sm border border-slate-300 rounded-xl px-3 py-2 bg-white text-slate-900 focus:outline-none focus:ring-2 focus:ring-slate-900"
+                        />
+                    </div>
+                    <div class="sm:col-span-3 space-y-1">
                         <label for="modal-pic-m" class="block text-xs font-bold text-slate-800">
-                            ระดับชั้น / ห้อง (<code class="text-indigo-600 font-mono">m</code>)
+                            ชั้น / ห้อง (<code class="text-indigo-600 font-mono">m</code>)
                         </label>
                         <input
                             id="modal-pic-m"
                             type="text"
                             list="m-grade-options"
-                            placeholder="เช่น ม.4 หรือ ม.4/1"
+                            placeholder="เช่น ม.4/1"
                             onkeydown="if(event.key==='Enter') submitQuickAddPictureModal()"
                             class="w-full text-xs sm:text-sm border border-slate-300 rounded-xl px-3 py-2 bg-white text-slate-900 focus:outline-none focus:ring-2 focus:ring-slate-900"
                         />
@@ -233,6 +245,102 @@
                         <line x1="12" x2="12" y1="3" y2="15"/>
                     </svg>
                     <span>บันทึกรูปภาพเข้าสู่ระบบ</span>
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <!-- ========================================== -->
+    <!-- EDIT STUDENT INFO MODAL                    -->
+    <!-- ========================================== -->
+    <div id="edit-student-modal" class="fixed inset-0 z-50 hidden bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4">
+        <div class="bg-white border border-slate-200 rounded-2xl shadow-xl max-w-md w-full overflow-hidden">
+            <div class="px-5 py-4 border-b border-slate-100 flex items-center justify-between">
+                <div class="flex items-center gap-2.5">
+                    <div class="w-8 h-8 rounded-lg bg-slate-100 text-slate-700 flex items-center justify-center">
+                        <svg class="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                            <path d="M12 20h9"/>
+                            <path d="M16.5 3.5a2.121 2.121 0 1 1 3 3L7 19l-4 1 1-4Z"/>
+                        </svg>
+                    </div>
+                    <div>
+                        <h3 class="text-sm sm:text-base font-bold text-slate-900">แก้ไขข้อมูลนักเรียน</h3>
+                        <p class="text-[11px] text-slate-500">อัปเดต <code class="font-mono">id_name</code>, <code class="font-mono">name_student</code>, และระดับชั้น <code class="font-mono">m</code> ขึ้น Supabase</p>
+                    </div>
+                </div>
+                <button type="button" onclick="closeEditStudentModal()" class="text-slate-400 hover:text-slate-700 p-1 rounded-lg transition">
+                    <svg class="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
+                    </svg>
+                </button>
+            </div>
+
+            <div class="p-5 space-y-4">
+                <input id="edit-student-old-id" type="hidden" />
+
+                <div class="space-y-1">
+                    <label for="edit-student-id-name" class="block text-xs font-bold text-slate-800">
+                        รหัสนักเรียน (<code class="text-indigo-600 font-mono">id_name</code>) <span class="text-rose-500">*</span>
+                    </label>
+                    <input
+                        id="edit-student-id-name"
+                        type="text"
+                        placeholder="เช่น 09584"
+                        onkeydown="if(event.key==='Enter') submitEditStudentModal()"
+                        class="w-full text-xs sm:text-sm border border-slate-300 rounded-xl px-3 py-2 bg-white text-slate-900 focus:outline-none focus:ring-2 focus:ring-slate-900 font-mono"
+                    />
+                </div>
+
+                <div class="space-y-1">
+                    <label for="edit-student-full-name" class="block text-xs font-bold text-slate-800">
+                        ชื่อ-นามสกุลนักเรียน (<code class="text-indigo-600 font-mono">name_student</code>)
+                    </label>
+                    <input
+                        id="edit-student-full-name"
+                        type="text"
+                        placeholder="เช่น นายสมชาย ใจดี"
+                        onkeydown="if(event.key==='Enter') submitEditStudentModal()"
+                        class="w-full text-xs sm:text-sm border border-slate-300 rounded-xl px-3 py-2 bg-white text-slate-900 focus:outline-none focus:ring-2 focus:ring-slate-900"
+                    />
+                </div>
+
+                <div class="space-y-1.5">
+                    <label for="edit-student-m" class="block text-xs font-bold text-slate-800">
+                        ระดับชั้น / ห้องเรียน (<code class="text-indigo-600 font-mono">m / grade</code>)
+                    </label>
+                    <input
+                        id="edit-student-m"
+                        type="text"
+                        list="m-grade-options"
+                        placeholder="เช่น ม.5/1 หรือ 5/1"
+                        onkeydown="if(event.key==='Enter') submitEditStudentModal()"
+                        class="w-full text-xs sm:text-sm border border-slate-300 rounded-xl px-3 py-2 bg-white text-slate-900 focus:outline-none focus:ring-2 focus:ring-slate-900"
+                    />
+                    <div class="flex flex-wrap items-center gap-1.5 pt-1">
+                        <span class="text-[11px] text-slate-500 mr-1">เลือกชั้นด่วน:</span>
+                        <button type="button" onclick="document.getElementById('edit-student-m').value='ม.1/1'" class="text-xs px-2 py-0.5 rounded-md border border-slate-200 bg-slate-50 hover:bg-slate-900 hover:text-white transition">ม.1</button>
+                        <button type="button" onclick="document.getElementById('edit-student-m').value='ม.2/1'" class="text-xs px-2 py-0.5 rounded-md border border-slate-200 bg-slate-50 hover:bg-slate-900 hover:text-white transition">ม.2</button>
+                        <button type="button" onclick="document.getElementById('edit-student-m').value='ม.3/1'" class="text-xs px-2 py-0.5 rounded-md border border-slate-200 bg-slate-50 hover:bg-slate-900 hover:text-white transition">ม.3</button>
+                        <button type="button" onclick="document.getElementById('edit-student-m').value='ม.4/1'" class="text-xs px-2 py-0.5 rounded-md border border-slate-200 bg-slate-50 hover:bg-slate-900 hover:text-white transition">ม.4</button>
+                        <button type="button" onclick="document.getElementById('edit-student-m').value='ม.5/1'" class="text-xs px-2 py-0.5 rounded-md border border-slate-200 bg-slate-50 hover:bg-slate-900 hover:text-white transition">ม.5</button>
+                        <button type="button" onclick="document.getElementById('edit-student-m').value='ม.6/1'" class="text-xs px-2 py-0.5 rounded-md border border-slate-200 bg-slate-50 hover:bg-slate-900 hover:text-white transition">ม.6</button>
+                    </div>
+                </div>
+            </div>
+
+            <div class="px-5 py-3.5 bg-slate-50 border-t border-slate-100 flex items-center justify-end gap-2">
+                <button
+                    type="button"
+                    onclick="closeEditStudentModal()"
+                    class="px-3.5 py-2 rounded-xl border border-slate-300 bg-white hover:bg-slate-50 text-xs font-semibold text-slate-700 transition">
+                    ยกเลิก
+                </button>
+                <button
+                    id="edit-student-submit-btn"
+                    type="button"
+                    onclick="submitEditStudentModal()"
+                    class="inline-flex items-center gap-1.5 px-4 py-2 rounded-xl bg-slate-900 hover:bg-slate-800 text-white text-xs sm:text-sm font-semibold shadow-sm transition">
+                    <span>บันทึกและอัปเดต Supabase</span>
                 </button>
             </div>
         </div>
@@ -555,6 +663,7 @@
                             <th class="py-3 px-4">ห้องเรียน</th>
                             <th class="py-3 px-4">เวลาที่บันทึก</th>
                             <th class="py-3 px-4 text-right">สถานะการเข้าเรียน</th>
+                            <th class="py-3 px-4 text-right">แก้ไข</th>
                         </tr>
                     </thead>
                     <tbody id="attendance-desktop-tbody" class="divide-y divide-slate-100 text-xs sm:text-sm">
@@ -658,17 +767,24 @@
                             <input
                                 id="new-student-input"
                                 type="text"
-                                placeholder="id_name เช่น 09627 หรือ สมชาย..."
+                                placeholder="รหัสนักเรียน เช่น 09627"
                                 onkeydown="if(event.key==='Enter') captureNewFace()"
-                                class="sm:col-span-5 text-xs sm:text-sm border border-slate-300 rounded-lg px-3 py-2 bg-white focus:outline-none focus:ring-2 focus:ring-slate-900"
+                                class="sm:col-span-3 text-xs sm:text-sm border border-slate-300 rounded-lg px-3 py-2 bg-white focus:outline-none focus:ring-2 focus:ring-slate-900"
+                            />
+                            <input
+                                id="new-student-name-input"
+                                type="text"
+                                placeholder="ชื่อ-นามสกุล (name_student)"
+                                onkeydown="if(event.key==='Enter') captureNewFace()"
+                                class="sm:col-span-3 text-xs sm:text-sm border border-slate-300 rounded-lg px-3 py-2 bg-white focus:outline-none focus:ring-2 focus:ring-slate-900"
                             />
                             <input
                                 id="new-student-m-input"
                                 type="text"
                                 list="m-grade-options"
-                                placeholder="m (เช่น ม.4/1)"
+                                placeholder="ชั้น (เช่น ม.4/1)"
                                 onkeydown="if(event.key==='Enter') captureNewFace()"
-                                class="sm:col-span-3 text-xs sm:text-sm border border-slate-300 rounded-lg px-2.5 py-2 bg-white focus:outline-none focus:ring-2 focus:ring-slate-900"
+                                class="sm:col-span-2 text-xs sm:text-sm border border-slate-300 rounded-lg px-2.5 py-2 bg-white focus:outline-none focus:ring-2 focus:ring-slate-900"
                             />
                             <button
                                 type="button"
@@ -896,31 +1012,44 @@
                             </button>
                         </div>
 
-                        <!-- Field 1: id_name & Field 2: m -->
+                        <!-- Field 1: id_name, Field 2: full_name (name_student) & Field 3: m -->
                         <div class="grid grid-cols-1 sm:grid-cols-12 gap-4">
                             <!-- id_name -->
-                            <div class="sm:col-span-7 space-y-1.5">
+                            <div class="sm:col-span-4 space-y-1.5">
                                 <label for="form-id-name" class="block text-xs font-bold text-slate-800">
-                                    รหัส / ชื่อ-นามสกุล (<code class="text-indigo-600 font-mono">id_name</code>) <span class="text-rose-500">*</span>
+                                    รหัสนักเรียน (<code class="text-indigo-600 font-mono">id_name</code>) <span class="text-rose-500">*</span>
                                 </label>
                                 <input
                                     id="form-id-name"
                                     type="text"
-                                    placeholder="เช่น 09627 หรือ 09627 สมชาย ใจดี"
+                                    placeholder="เช่น 09627"
+                                    class="w-full text-xs sm:text-sm border border-slate-300 rounded-xl px-3.5 py-2.5 bg-white text-slate-900 focus:outline-none focus:ring-2 focus:ring-slate-900"
+                                />
+                            </div>
+
+                            <!-- full_name / name_student -->
+                            <div class="sm:col-span-5 space-y-1.5">
+                                <label for="form-full-name" class="block text-xs font-bold text-slate-800">
+                                    ชื่อ-นามสกุลนักเรียน (<code class="text-indigo-600 font-mono">name_student</code>)
+                                </label>
+                                <input
+                                    id="form-full-name"
+                                    type="text"
+                                    placeholder="เช่น นายสมชาย ใจดี (แสดงในแอปมือถือ)"
                                     class="w-full text-xs sm:text-sm border border-slate-300 rounded-xl px-3.5 py-2.5 bg-white text-slate-900 focus:outline-none focus:ring-2 focus:ring-slate-900"
                                 />
                             </div>
 
                             <!-- m (Grade / Classroom) -->
-                            <div class="sm:col-span-5 space-y-1.5">
+                            <div class="sm:col-span-3 space-y-1.5">
                                 <label for="form-m" class="block text-xs font-bold text-slate-800">
-                                    ระดับชั้น / ห้องเรียน (<code class="text-indigo-600 font-mono">m</code>) <span class="text-rose-500">*</span>
+                                    ระดับชั้น (<code class="text-indigo-600 font-mono">m</code>) <span class="text-rose-500">*</span>
                                 </label>
                                 <input
                                     id="form-m"
                                     type="text"
                                     list="m-grade-options"
-                                    placeholder="เช่น ม.4 หรือ ม.4/1"
+                                    placeholder="เช่น ม.4/1"
                                     class="w-full text-xs sm:text-sm border border-slate-300 rounded-xl px-3.5 py-2.5 bg-white text-slate-900 focus:outline-none focus:ring-2 focus:ring-slate-900"
                                 />
                             </div>
@@ -1036,7 +1165,7 @@
                             id="sb-search-input"
                             type="text"
                             oninput="renderSupabaseRecordsTable()"
-                            placeholder="ค้นหา id_name หรือ ชั้น m..."
+                            placeholder="ค้นหารหัส, ชื่อ หรือ ชั้น m..."
                             class="text-xs sm:text-sm border border-slate-300 rounded-xl px-3.5 py-2 bg-slate-50 focus:bg-white focus:outline-none focus:ring-2 focus:ring-slate-900 w-full sm:w-64"
                         />
                         <button
@@ -1051,7 +1180,7 @@
                     <table class="w-full text-left border-collapse">
                         <thead>
                             <tr class="bg-slate-50 border-b border-slate-200 text-xs font-semibold text-slate-500 uppercase tracking-wider">
-                                <th class="py-3 px-4">id_name (รหัส / ชื่อ)</th>
+                                <th class="py-3 px-4">id_name / ชื่อนักเรียน</th>
                                 <th class="py-3 px-4">m (ระดับชั้น)</th>
                                 <th class="py-3 px-4">array_faceshape (เวกเตอร์ 128 มิติ)</th>
                                 <th class="py-3 px-4">สถานะซิงค์</th>
@@ -1362,14 +1491,26 @@
 
                     return `
                         <tr class="hover:bg-slate-50/70 transition">
-                            <td class="py-3 px-4 font-mono font-bold text-slate-800">${student.student_id}</td>
-                            <td class="py-3 px-4 font-medium text-slate-800">${student.full_name || student.student_id}</td>
-                            <td class="py-3 px-4 text-slate-500">${student.classroom || '-'}</td>
-                            <td class="py-3 px-4 font-mono text-slate-600">${student.checkin_time || '-'}</td>
+                            <td class="py-3 px-4 font-mono font-bold text-slate-800">${escapeHtml(student.student_id)}</td>
+                            <td class="py-3 px-4 font-medium text-slate-800">${escapeHtml(student.full_name || student.student_id)}</td>
+                            <td class="py-3 px-4 text-slate-500">${escapeHtml(student.classroom || '-')}</td>
+                            <td class="py-3 px-4 font-mono text-slate-600">${escapeHtml(student.checkin_time || '-')}</td>
                             <td class="py-3 px-4 text-right">
                                 <span class="inline-flex items-center text-xs font-semibold px-2.5 py-0.5 rounded-full border ${badgeClass}">
                                     ${statusLabel}
                                 </span>
+                            </td>
+                            <td class="py-3 px-4 text-right">
+                                <button
+                                    type="button"
+                                    data-id="${escapeHtml(student.student_id)}"
+                                    data-name="${escapeHtml(student.full_name || '')}"
+                                    data-m="${escapeHtml(student.classroom || '-')}"
+                                    onclick="openEditStudentFromBtn(this)"
+                                    class="inline-flex items-center gap-1 text-xs bg-slate-100 hover:bg-slate-200 text-slate-700 px-2.5 py-1.5 rounded-lg font-medium transition"
+                                    title="แก้ไขรหัส ชื่อ และชั้น">
+                                    ${SVG_ICONS.edit} แก้ไข
+                                </button>
                             </td>
                         </tr>
                     `;
@@ -1398,10 +1539,10 @@
                             <div class="flex items-start justify-between gap-2">
                                 <div>
                                     <span class="font-mono text-xs font-bold text-slate-600 bg-slate-100 px-2 py-0.5 rounded border border-slate-200">
-                                        ${student.student_id}
+                                        ${escapeHtml(student.student_id)}
                                     </span>
                                     <h3 class="text-sm font-bold text-slate-900 mt-1">
-                                        ${student.full_name || student.student_id}
+                                        ${escapeHtml(student.full_name || student.student_id)}
                                     </h3>
                                 </div>
                                 <span class="inline-flex items-center text-xs font-semibold px-2.5 py-0.5 rounded-full border ${badgeClass}">
@@ -1409,8 +1550,16 @@
                                 </span>
                             </div>
                             <div class="flex items-center justify-between text-xs text-slate-500 pt-2 border-t border-slate-100">
-                                <span>ห้อง: ${student.classroom || '-'}</span>
-                                <span class="font-mono">เวลา: ${student.checkin_time || '-'}</span>
+                                <span>ห้อง: ${escapeHtml(student.classroom || '-')} • เวลา: ${escapeHtml(student.checkin_time || '-')}</span>
+                                <button
+                                    type="button"
+                                    data-id="${escapeHtml(student.student_id)}"
+                                    data-name="${escapeHtml(student.full_name || '')}"
+                                    data-m="${escapeHtml(student.classroom || '-')}"
+                                    onclick="openEditStudentFromBtn(this)"
+                                    class="inline-flex items-center gap-1 text-xs bg-slate-100 hover:bg-slate-200 text-slate-700 px-2.5 py-1 rounded-lg font-medium transition">
+                                    ${SVG_ICONS.edit} แก้ไข
+                                </button>
                             </div>
                         </div>
                     `;
@@ -1484,6 +1633,7 @@
             container.innerHTML = registeredIds.map(sid => {
                 const safeSid = sid.replace(/'/g, "\\'");
                 const info = previews[sid] || {};
+                const fullName = info.full_name || sid;
                 const picsCount = info.saved_pics || 0;
                 const samplesCount = info.samples || 0;
                 const mVal = info.m || '-';
@@ -1497,21 +1647,32 @@
                                 class="w-full h-full object-cover"
                             />
                             <div class="hidden w-full h-full items-center justify-center text-[10px] text-slate-400 font-mono">
-                                ${sid}
+                                ${escapeHtml(sid)}
                             </div>
                         </div>
 
                         <div class="min-w-0 flex-1">
                             <div class="flex items-center gap-1.5 flex-wrap">
-                                <span class="font-mono text-xs font-bold text-slate-800">${sid}</span>
+                                <span class="text-xs font-bold text-slate-900 truncate">${escapeHtml(fullName)}</span>
+                                <span class="font-mono text-[11px] font-semibold text-slate-500">(${escapeHtml(sid)})</span>
                                 <span class="text-[10px] font-semibold px-1.5 py-0.5 rounded bg-indigo-50 text-indigo-700 border border-indigo-200">
-                                    m: ${mVal}
+                                    m: ${escapeHtml(mVal)}
                                 </span>
                             </div>
                             <p class="text-[11px] text-slate-500">${samplesCount} array_faceshape • ${picsCount} ภาพ</p>
                         </div>
 
-                        <div class="flex items-center gap-1.5 flex-shrink-0">
+                        <div class="flex items-center gap-1.5 flex-shrink-0 flex-wrap justify-end">
+                            <button
+                                type="button"
+                                data-id="${escapeHtml(sid)}"
+                                data-name="${escapeHtml(fullName)}"
+                                data-m="${escapeHtml(mVal)}"
+                                onclick="openEditStudentFromBtn(this)"
+                                class="inline-flex items-center gap-1 text-xs bg-slate-100 hover:bg-slate-200 text-slate-700 px-2 py-1 rounded-lg font-medium transition"
+                                title="แก้ไขรหัส ชื่อ และระดับชั้น">
+                                ${SVG_ICONS.edit} แก้ไข
+                            </button>
                             <button
                                 onclick="captureFace('${safeSid}', '${mVal.replace(/'/g, "\\'")}')"
                                 class="inline-flex items-center text-xs bg-slate-100 hover:bg-slate-200 text-slate-700 px-2 py-1 rounded-lg font-medium transition"
@@ -1542,22 +1703,28 @@
 
         async function captureNewFace() {
             const input = document.getElementById('new-student-input');
+            const nameInput = document.getElementById('new-student-name-input');
             const mInput = document.getElementById('new-student-m-input');
             const studentId = (input.value || '').trim();
+            const fullName = ((nameInput && nameInput.value) || '').trim();
             const mVal = ((mInput && mInput.value) || '').trim() || '-';
             if (!studentId) {
-                showToast('กรุณากรอก id_name (ชื่อหรือรหัสนักเรียน) ก่อน', true);
+                showToast('กรุณากรอก id_name (รหัสนักเรียน) ก่อน', true);
                 input.focus();
                 return;
             }
-            await captureFace(studentId, mVal);
+            await captureFace(studentId, mVal, fullName);
             input.value = '';
+            if (nameInput) nameInput.value = '';
         }
 
-        async function captureFace(studentId, mVal = '-') {
-            showToast(`กำลังถ่ายภาพใบหน้า "${studentId}"...`);
+        async function captureFace(studentId, mVal = '-', fullName = '') {
+            showToast(`กำลังถ่ายภาพใบหน้า "${fullName || studentId}"...`);
             try {
-                const url = `/api/register-face/${encodeURIComponent(studentId)}?m=${encodeURIComponent(mVal || '-')}`;
+                let url = `/api/register-face/${encodeURIComponent(studentId)}?m=${encodeURIComponent(mVal || '-')}`;
+                if (fullName) {
+                    url += `&full_name=${encodeURIComponent(fullName)}`;
+                }
                 const res = await fetch(url, { method: 'POST' });
                 const data = await res.json();
                 if (res.ok && data.success) {
@@ -1581,14 +1748,16 @@
             return filename.replace(/\.[^/.]+$/, '').replace(/^pic_\d+$/i, '').trim();
         }
 
-        function openQuickAddPictureModal(prefillId = '', prefillM = '', initialFiles = null) {
+        function openQuickAddPictureModal(prefillId = '', prefillM = '', initialFiles = null, prefillName = '') {
             const modal = document.getElementById('quick-add-pic-modal');
             const idEl = document.getElementById('modal-pic-id-name');
+            const nameEl = document.getElementById('modal-pic-full-name');
             const mEl = document.getElementById('modal-pic-m');
             const fileInput = document.getElementById('modal-pic-file-input');
             if (!modal) return;
 
             if (idEl) idEl.value = prefillId || '';
+            if (nameEl) nameEl.value = prefillName || '';
             if (mEl) mEl.value = (prefillM && prefillM !== '-') ? prefillM : '';
             if (fileInput) fileInput.value = '';
 
@@ -1657,8 +1826,10 @@
 
         async function submitQuickAddPictureModal() {
             const idEl = document.getElementById('modal-pic-id-name');
+            const nameEl = document.getElementById('modal-pic-full-name');
             const mEl = document.getElementById('modal-pic-m');
             const studentId = (idEl ? idEl.value : '').trim();
+            const fullName = (nameEl ? nameEl.value : '').trim();
             const mVal = (mEl ? mEl.value : '').trim() || '-';
 
             if (!modalStagedFiles || modalStagedFiles.length === 0) {
@@ -1668,14 +1839,14 @@
                 return;
             }
             if (!studentId) {
-                showToast('กรุณากรอก id_name (รหัสหรือชื่อ-นามสกุล)', true);
+                showToast('กรุณากรอก id_name (รหัสนักเรียน)', true);
                 if (idEl) idEl.focus();
                 return;
             }
 
             const filesToUpload = modalStagedFiles.slice();
             closeQuickAddPictureModal();
-            await uploadMultipleFilesForStudent(studentId, filesToUpload, mVal, true);
+            await uploadMultipleFilesForStudent(studentId, filesToUpload, mVal, true, fullName);
         }
 
         async function uploadNewFaceFromForm(inputEl) {
@@ -1684,24 +1855,29 @@
             inputEl.value = '';
 
             const idInput = document.getElementById('new-student-input');
+            const nameInput = document.getElementById('new-student-name-input');
             const mInput = document.getElementById('new-student-m-input');
             const studentId = (idInput ? idInput.value : '').trim();
+            const fullName = ((nameInput && nameInput.value) || '').trim();
             const mVal = ((mInput && mInput.value) || '').trim() || '-';
 
             if (!studentId) {
-                openQuickAddPictureModal('', mVal, files);
+                openQuickAddPictureModal('', mVal, files, fullName);
                 return;
             }
 
-            const ok = await uploadMultipleFilesForStudent(studentId, files, mVal, true);
-            if (ok && idInput) idInput.value = '';
+            const ok = await uploadMultipleFilesForStudent(studentId, files, mVal, true, fullName);
+            if (ok) {
+                if (idInput) idInput.value = '';
+                if (nameInput) nameInput.value = '';
+            }
         }
 
-        async function uploadMultipleFilesForStudent(studentId, filesList, mVal = '-', appendSample = true) {
+        async function uploadMultipleFilesForStudent(studentId, filesList, mVal = '-', appendSample = true, fullName = '') {
             const files = Array.from(filesList || []);
             if (files.length === 0) return false;
 
-            showToast(`กำลังอัปโหลดรูปภาพของ "${studentId}" (${files.length} รูป)...`);
+            showToast(`กำลังอัปโหลดรูปภาพของ "${fullName || studentId}" (${files.length} รูป)...`);
             let successCount = 0;
             let lastMessage = '';
 
@@ -1709,10 +1885,17 @@
                 const formData = new FormData();
                 formData.append('file', files[i]);
                 formData.append('m', mVal || '-');
+                if (fullName) {
+                    formData.append('full_name', fullName);
+                }
                 formData.append('append_sample', (i === 0 ? appendSample : true) ? 'true' : 'false');
 
                 try {
-                    const res = await fetch(`/api/upload-face/${encodeURIComponent(studentId)}?m=${encodeURIComponent(mVal || '-')}`, {
+                    let uploadUrl = `/api/upload-face/${encodeURIComponent(studentId)}?m=${encodeURIComponent(mVal || '-')}`;
+                    if (fullName) {
+                        uploadUrl += `&full_name=${encodeURIComponent(fullName)}`;
+                    }
+                    const res = await fetch(uploadUrl, {
                         method: 'POST',
                         body: formData
                     });
@@ -1856,9 +2039,11 @@
 
         function clearSupabaseForm() {
             const idEl = document.getElementById('form-id-name');
+            const nameEl = document.getElementById('form-full-name');
             const mEl = document.getElementById('form-m');
             const arrEl = document.getElementById('form-array-faceshape');
             if (idEl) idEl.value = '';
+            if (nameEl) nameEl.value = '';
             if (mEl) mEl.value = '';
             if (arrEl) arrEl.value = '';
             clearStagedSupabaseFile();
@@ -1981,10 +2166,12 @@
             inputEl.value = '';
 
             const idEl = document.getElementById('form-id-name');
+            const nameEl = document.getElementById('form-full-name');
             const mEl = document.getElementById('form-m');
             const appendEl = document.getElementById('form-append-sample');
 
             let idName = (idEl ? idEl.value : '').trim();
+            const fullName = (nameEl ? nameEl.value : '').trim();
             const mVal = (mEl ? mEl.value : '').trim() || '-';
             const appendSample = appendEl ? appendEl.checked : true;
 
@@ -1997,11 +2184,11 @@
             }
 
             if (!idName) {
-                openQuickAddPictureModal('', mVal, files);
+                openQuickAddPictureModal('', mVal, files, fullName);
                 return;
             }
 
-            const ok = await uploadMultipleFilesForStudent(idName, files, mVal, appendSample);
+            const ok = await uploadMultipleFilesForStudent(idName, files, mVal, appendSample, fullName);
             if (ok) {
                 clearStagedSupabaseFile();
                 await loadSupabaseRecords();
@@ -2010,16 +2197,18 @@
 
         async function submitSupabaseRecord(captureDirect = false) {
             const idEl = document.getElementById('form-id-name');
+            const nameEl = document.getElementById('form-full-name');
             const mEl = document.getElementById('form-m');
             const arrEl = document.getElementById('form-array-faceshape');
             const appendEl = document.getElementById('form-append-sample');
 
             const idName = (idEl ? idEl.value : '').trim();
+            const fullName = (nameEl ? nameEl.value : '').trim();
             const mVal = (mEl ? mEl.value : '').trim() || '-';
             const appendSample = appendEl ? appendEl.checked : true;
 
             if (!idName) {
-                showToast('กรุณากรอก id_name (รหัสหรือชื่อนักเรียน)', true);
+                showToast('กรุณากรอก id_name (รหัสนักเรียน)', true);
                 if (idEl) idEl.focus();
                 return;
             }
@@ -2027,7 +2216,7 @@
             if (!captureDirect && stagedSupabaseFile) {
                 const fileToSave = stagedSupabaseFile;
                 clearStagedSupabaseFile();
-                const ok = await uploadMultipleFilesForStudent(idName, [fileToSave], mVal, appendSample);
+                const ok = await uploadMultipleFilesForStudent(idName, [fileToSave], mVal, appendSample, fullName);
                 if (ok) {
                     if (arrEl) arrEl.value = '';
                     validateFaceshapeTextarea();
@@ -2038,20 +2227,28 @@
 
             let parsedArray = null;
             if (!captureDirect) {
-                parsedArray = validateFaceshapeTextarea();
-                if (!parsedArray) {
+                const existingRec = cachedSupabaseRecords.find(r => r.id_name === idName);
+                const hasRawArray = arrEl && arrEl.value.trim().length > 0;
+                if (hasRawArray) {
+                    parsedArray = validateFaceshapeTextarea();
+                    if (!parsedArray) {
+                        showToast('รูปแบบ array_faceshape ไม่ถูกต้อง (ต้องเป็น JSON Array 128 มิติ)', true);
+                        return;
+                    }
+                } else if (!existingRec) {
                     showToast('กรุณาดึงค่า array_faceshape จากกล้อง/รูปภาพ หรือวาง JSON Array 128 มิติก่อนบันทึก', true);
                     return;
                 }
             }
 
-            showToast(captureDirect ? `กำลังถ่ายภาพสดและบันทึก "${idName}"...` : `กำลังบันทึกข้อมูล "${idName}" ลงระบบและ Supabase...`);
+            showToast(captureDirect ? `กำลังถ่ายภาพสดและบันทึก "${fullName || idName}"...` : `กำลังบันทึกข้อมูล "${fullName || idName}" ลงระบบและ Supabase...`);
             try {
                 const res = await fetch('/api/supabase/records', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({
                         id_name: idName,
+                        full_name: fullName || null,
                         m: mVal,
                         array_faceshape: parsedArray,
                         append_sample: appendSample,
@@ -2100,8 +2297,9 @@
             if (q) {
                 list = list.filter(r => {
                     const idStr = (r.id_name || '').toLowerCase();
+                    const nameStr = (r.full_name || '').toLowerCase();
                     const mStr = (r.m || '').toLowerCase();
-                    return idStr.includes(q) || mStr.includes(q);
+                    return idStr.includes(q) || nameStr.includes(q) || mStr.includes(q);
                 });
             }
 
@@ -2120,6 +2318,7 @@
 
             tbody.innerHTML = list.map(rec => {
                 const safeId = (rec.id_name || '').replace(/'/g, "\\'");
+                const fullName = rec.full_name || rec.id_name || '-';
                 const mVal = rec.m || '-';
                 const samplesCount = rec.samples_count || 0;
                 const dims = rec.dims || 128;
@@ -2143,7 +2342,10 @@
                                         ${rec.id_name}
                                     </div>
                                 </div>
-                                <span class="font-mono font-bold text-slate-900">${rec.id_name}</span>
+                                <div class="flex flex-col">
+                                    <span class="font-bold text-slate-900">${fullName}</span>
+                                    <span class="font-mono text-[11px] text-slate-500">${rec.id_name}</span>
+                                </div>
                             </div>
                         </td>
                         <td class="py-3 px-4">
@@ -2171,10 +2373,20 @@
                         <td class="py-3 px-4 text-right">
                             <div class="inline-flex items-center gap-1.5">
                                 <button
+                                    type="button"
+                                    data-id="${escapeHtml(rec.id_name)}"
+                                    data-name="${escapeHtml(fullName)}"
+                                    data-m="${escapeHtml(mVal)}"
+                                    onclick="openEditStudentFromBtn(this)"
+                                    class="inline-flex items-center gap-1 text-xs bg-slate-100 hover:bg-slate-200 text-slate-700 px-2.5 py-1.5 rounded-lg font-medium transition"
+                                    title="แก้ไข id_name, name_student และระดับชั้น">
+                                    ${SVG_ICONS.edit} แก้ไข
+                                </button>
+                                <button
                                     onclick="editRecordInForm('${safeId}')"
                                     class="inline-flex items-center gap-1 text-xs bg-slate-100 hover:bg-slate-200 text-slate-700 px-2.5 py-1.5 rounded-lg font-medium transition"
-                                    title="นำข้อมูลขึ้นไปแก้ไขในฟอร์ม">
-                                    ${SVG_ICONS.edit} แก้ไข
+                                    title="โหลดข้อมูลและ Vector ขึ้นฟอร์มด้านบน">
+                                    โหลดฟอร์ม
                                 </button>
                                 <button
                                     onclick="captureFace('${safeId}', '${mVal.replace(/'/g, "\\'")}')"
@@ -2201,16 +2413,108 @@
             }).join('');
         }
 
+        function escapeHtml(str) {
+            return String(str == null ? '' : str)
+                .replace(/&/g, '&amp;')
+                .replace(/</g, '&lt;')
+                .replace(/>/g, '&gt;')
+                .replace(/"/g, '&quot;')
+                .replace(/'/g, '&#39;');
+        }
+
+        function openEditStudentFromBtn(btn) {
+            if (!btn) return;
+            openEditStudentModal(
+                btn.getAttribute('data-id') || '',
+                btn.getAttribute('data-name') || '',
+                btn.getAttribute('data-m') || ''
+            );
+        }
+
+        function openEditStudentModal(idName, fullName = '', mVal = '') {
+            const modal = document.getElementById('edit-student-modal');
+            const oldIdEl = document.getElementById('edit-student-old-id');
+            const idEl = document.getElementById('edit-student-id-name');
+            const nameEl = document.getElementById('edit-student-full-name');
+            const mEl = document.getElementById('edit-student-m');
+            if (!modal) return;
+
+            if (oldIdEl) oldIdEl.value = idName || '';
+            if (idEl) idEl.value = idName || '';
+            if (nameEl) nameEl.value = (fullName && fullName !== idName) ? fullName : '';
+            if (mEl) mEl.value = (mVal && mVal !== '-') ? mVal : '';
+
+            modal.classList.remove('hidden');
+            if (nameEl) setTimeout(() => nameEl.focus(), 50);
+        }
+
+        function closeEditStudentModal() {
+            const modal = document.getElementById('edit-student-modal');
+            if (modal) modal.classList.add('hidden');
+        }
+
+        async function submitEditStudentModal() {
+            const oldIdEl = document.getElementById('edit-student-old-id');
+            const idEl = document.getElementById('edit-student-id-name');
+            const nameEl = document.getElementById('edit-student-full-name');
+            const mEl = document.getElementById('edit-student-m');
+            const submitBtn = document.getElementById('edit-student-submit-btn');
+
+            const oldId = (oldIdEl ? oldIdEl.value : '').trim();
+            const newId = (idEl ? idEl.value : '').trim();
+            const fullName = (nameEl ? nameEl.value : '').trim();
+            const mVal = (mEl ? mEl.value : '').trim() || '-';
+
+            if (!oldId || !newId) {
+                showToast('กรุณากรอกรหัสนักเรียน (id_name)', true);
+                if (idEl) idEl.focus();
+                return;
+            }
+
+            if (submitBtn) submitBtn.disabled = true;
+            showToast(`กำลังบันทึกการแก้ไข "${fullName || newId}" และอัปเดต Supabase...`);
+
+            try {
+                const res = await fetch(`/api/students/${encodeURIComponent(oldId)}`, {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        id_name: newId,
+                        full_name: fullName || newId,
+                        m: mVal
+                    })
+                });
+                const data = await res.json();
+                if (data.supabase) updateSupabaseStatusUI(data.supabase);
+
+                if (res.ok && data.success) {
+                    picCacheBuster = Date.now();
+                    closeEditStudentModal();
+                    showToast(data.message || 'แก้ไขข้อมูลสำเร็จ!', Boolean(data.supabase_warning));
+                    await pollDashboard();
+                    await loadSupabaseRecords();
+                } else {
+                    showToast(data.message || 'ไม่สามารถแก้ไขข้อมูลได้', true);
+                }
+            } catch (err) {
+                showToast('เกิดข้อผิดพลาดในการเชื่อมต่อเพื่อแก้ไขข้อมูล', true);
+            } finally {
+                if (submitBtn) submitBtn.disabled = false;
+            }
+        }
+
         function editRecordInForm(idName) {
             const rec = cachedSupabaseRecords.find(r => r.id_name === idName);
             if (!rec) return;
 
             const idEl = document.getElementById('form-id-name');
+            const nameEl = document.getElementById('form-full-name');
             const mEl = document.getElementById('form-m');
             const arrEl = document.getElementById('form-array-faceshape');
             const appendEl = document.getElementById('form-append-sample');
 
             if (idEl) idEl.value = rec.id_name || '';
+            if (nameEl) nameEl.value = (rec.full_name && rec.full_name !== rec.id_name) ? rec.full_name : '';
             if (mEl) mEl.value = rec.m && rec.m !== '-' ? rec.m : '';
             if (arrEl && rec.array_faceshape) {
                 arrEl.value = JSON.stringify(rec.array_faceshape);
