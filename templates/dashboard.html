@@ -736,6 +736,36 @@
                         </div>
                     </div>
 
+                    <!-- High-Mount School Camera & Fast-Walk Controls -->
+                    <div class="bg-indigo-50/60 border border-indigo-200/80 rounded-xl p-3.5 text-xs space-y-2.5">
+                        <div class="flex items-center justify-between gap-2">
+                            <label class="inline-flex items-center gap-2 cursor-pointer select-none">
+                                <input
+                                    id="high-cam-toggle"
+                                    type="checkbox"
+                                    {{ 'checked' if vision_status.high_camera_mode else '' }}
+                                    onchange="updateVisionConfig()"
+                                    class="w-4 h-4 rounded border-indigo-300 text-indigo-600 focus:ring-indigo-500"
+                                />
+                                <span class="font-bold text-indigo-950">โหมดกล้องติดตั้งสูง (High-Mount HD)</span>
+                            </label>
+                            <span id="camera-resolution-badge" class="px-2 py-0.5 rounded-md bg-white border border-indigo-200 text-[11px] font-semibold text-indigo-700">
+                                {{ vision_status.capture_resolution or 'Auto' }}
+                            </span>
+                        </div>
+                        <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                            <span class="text-[11px] text-slate-600">รองรับเดินความเร็วปกติ ชดเชยมุมก้ม ย้อนแสง และเลือกเฟรมที่คมชัดสุด</span>
+                            <select
+                                id="stability-frames-select"
+                                onchange="updateVisionConfig()"
+                                class="text-xs border border-indigo-200 rounded-lg px-2 py-1 bg-white font-medium text-slate-800 focus:outline-none focus:ring-2 focus:ring-indigo-500 flex-shrink-0">
+                                <option value="4" {{ 'selected' if vision_status.stability_frames == 4 else '' }}>เร็วมาก (4 เฟรม - เดินเร็ว)</option>
+                                <option value="5" {{ 'selected' if vision_status.stability_frames == 5 else '' }}>แนะนำ (5 เฟรม - เดินปกติ)</option>
+                                <option value="7" {{ 'selected' if vision_status.stability_frames == 7 else '' }}>เข้มงวดสูง (7 เฟรม)</option>
+                            </select>
+                        </div>
+                    </div>
+
                     <!-- Detection Status Card -->
                     <div class="bg-slate-50 border border-slate-200 rounded-xl p-3.5 text-xs text-slate-600 space-y-1.5">
                         <div class="flex items-center justify-between">
@@ -1970,6 +2000,31 @@
             }
         }
 
+        async function updateVisionConfig() {
+            const highCamEl = document.getElementById('high-cam-toggle');
+            const stabEl = document.getElementById('stability-frames-select');
+            const payload = {
+                high_camera_mode: highCamEl ? highCamEl.checked : true,
+                stability_frames: stabEl ? parseInt(stabEl.value, 10) : 5,
+            };
+            try {
+                const res = await fetch('/api/vision-config', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload),
+                });
+                const data = await res.json();
+                if (res.ok && data.success) {
+                    showToast(data.message || 'อัปเดตการตั้งค่ากล้องเรียบร้อย');
+                    await pollDashboard();
+                } else {
+                    showToast(data.message || 'ไม่สามารถอัปเดตการตั้งค่ากล้องได้', true);
+                }
+            } catch (err) {
+                showToast('เกิดข้อผิดพลาดในการอัปเดตการตั้งค่ากล้อง', true);
+            }
+        }
+
         async function syncFolderNow() {
             showToast('กำลังนำเข้าและประมวลผลรูปภาพและซิงค์ข้อมูล...');
             try {
@@ -2659,6 +2714,22 @@
                         if (camSelectEl.value !== String(cachedVision.camera_index)) {
                             camSelectEl.value = String(cachedVision.camera_index);
                         }
+                    }
+
+                    const highCamToggleEl = document.getElementById('high-cam-toggle');
+                    const stabSelectEl = document.getElementById('stability-frames-select');
+                    const resBadgeEl = document.getElementById('camera-resolution-badge');
+                    if (highCamToggleEl && cachedVision.high_camera_mode !== undefined) {
+                        highCamToggleEl.checked = Boolean(cachedVision.high_camera_mode);
+                    }
+                    if (stabSelectEl && cachedVision.stability_frames !== undefined) {
+                        const targetVal = String(cachedVision.stability_frames);
+                        if (Array.from(stabSelectEl.options).some(o => o.value === targetVal)) {
+                            stabSelectEl.value = targetVal;
+                        }
+                    }
+                    if (resBadgeEl && cachedVision.capture_resolution) {
+                        resBadgeEl.textContent = cachedVision.capture_resolution;
                     }
 
                     if (statusCamTextEl) {

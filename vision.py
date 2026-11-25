@@ -7,6 +7,7 @@ import threading
 import time
 import urllib.request
 from collections import deque
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Deque, Dict, List, Optional, Tuple
@@ -35,10 +36,30 @@ YUNET_MODEL_URL = (
     "face_detection_yunet/face_detection_yunet_2023mar.onnx"
 )
 DEFAULT_COOLDOWN_SECONDS = 300  # 5 minutes cooldown
-DEFAULT_MATCH_TOLERANCE = 0.42  # Base threshold for close-range faces (tighter to separate similar arrays)
+DEFAULT_MATCH_TOLERANCE = 0.42  # Base threshold for close-range frontal faces (tighter to separate similar arrays)
 DEFAULT_MIN_MATCH_MARGIN = 0.032  # Required separation margin between #1 and #2 closest people
-DEFAULT_STABILITY_FRAMES = 7  # Consecutive/consistent frames required before confirming identity
-MAX_MISSED_TRACK_FRAMES = 5  # Grace frames before dropping a tracked face when detector misses a walking frame
+DEFAULT_STABILITY_FRAMES = 5  # Balanced fast-walk confirmation (configurable 3-7; 5 frames = ~0.25-0.35s)
+MAX_MISSED_TRACK_FRAMES = 10  # Grace frames with velocity coasting when high-mounted camera briefly misses walking face
+DEFAULT_HIGH_CAMERA_MODE = True  # Optimized for elevated/overhead school cameras & normal walking speed
+DEFAULT_CAPTURE_WIDTH = 1280
+DEFAULT_CAPTURE_HEIGHT = 720
+MIN_SHARPNESS_FOR_DECAY = 18.0  # Motion-blurred walking crops below this don't erase accumulated stability
+
+
+@dataclass
+class FaceCropSample:
+    """Exact paired face crop captured directly from the YuNet detection frame (zero box-vs-frame lag)."""
+
+    crop_bgr: np.ndarray
+    rel_box: Tuple[int, int, int, int]
+    rel_landmarks: Optional[Tuple[Tuple[float, float], ...]]
+    face_w: int
+    det_score: float
+    sharpness: float
+    quality_score: float
+    pitch_severity: float
+    captured_ts: float
+    frame_seq: int
 
 
 def _load_face_data(path: Path) -> Dict[str, List[List[float]]]:
@@ -145,8 +166,10 @@ def _filter_and_dedup_person_arrays(
 
 class TrackedFace:
     """
-    Tracks a face bounding box and stabilizes identity across `stability_frames` (default: 7 frames).
-    Prevents 1-frame flickers or false matches caused by similar arrays across different people.
+    Tracks a face bounding box and stabilizes identity across `stability_frames` (default: 5 frames).
+    Prevents 1-frame flickers or false matches caused by similar arrays across different people,
+    while supporting normal-speed walking under high-mounted school cameras via paired sharpest-crop
+    buffering and velocity-predicted tracking.
     """
 
     def __init__(
@@ -158,12 +181,13 @@ class TrackedFace:
         stability_frames: int = DEFAULT_STABILITY_FRAMES,
     ) -> None:
         self.box_full = box_full  # (top, right, bottom, left) in full frame coordinates
+        self.raw_box_full = box_full  # Latest unlagged YuNet detection box
         self.label = label  # Confirmed label (remains "Unknown" until stable across `stability_frames`)
         self.distance = distance
         self.last_encoded_ts = last_encoded_ts
         self.stability_frames = max(1, int(stability_frames))
 
-        # 7-frame stabilization state
+        # Stabilization state
         self.candidate_label: str = label if label != "Unknown" else "Unknown"
         self.stable_frames: int = self.stability_frames if label != "Unknown" else 0
         self.challenger_label: str = "Unknown"
@@ -175,9 +199,15 @@ class TrackedFace:
         self.vy: float = 0.0
         self.pre_encoded_track_frames: int = 0
         self.verified_encodings_count: int = 1 if label != "Unknown" else 0
+        self.strong_margin: bool = False
+        self.last_pitch_severity: float = 0.0
 
-        self.encoding_history: Deque[np.ndarray] = deque(maxlen=self.stability_frames)
-        self.frame_votes: Deque[str] = deque(maxlen=self.stability_frames)
+        # Paired sharpest face crop buffer (eliminates frame-vs-box lag and motion-blur waste)
+        self.pending_crop: Optional[FaceCropSample] = None
+        self.last_encoded_frame_seq: int = -1
+
+        self.encoding_history: Deque[np.ndarray] = deque(maxlen=max(self.stability_frames, 7))
+        self.frame_votes: Deque[str] = deque(maxlen=max(self.stability_frames, 7))
 
     @property
     def is_stable(self) -> bool:
@@ -198,7 +228,7 @@ class TrackedFace:
         top, right, bottom, left = self.box_full
         return max(1, right - left)
 
-    def update_box_smooth(self, new_box: Tuple[int, int, int, int], alpha: float = 0.78) -> None:
+    def update_box_smooth(self, new_box: Tuple[int, int, int, int], alpha: float = 0.85) -> None:
         """Smooth bounding box coordinates and update walking velocity across frames."""
         ocx, ocy = self.center
         pt, pr, pb, pl = self.box_full
@@ -207,6 +237,7 @@ class TrackedFace:
         ncy = (nt + nb) * 0.5
         self.vx = 0.65 * (ncx - ocx) + 0.35 * self.vx
         self.vy = 0.65 * (ncy - ocy) + 0.35 * self.vy
+        self.raw_box_full = new_box
         self.box_full = (
             int(round(alpha * nt + (1.0 - alpha) * pt)),
             int(round(alpha * nr + (1.0 - alpha) * pr)),
@@ -215,22 +246,62 @@ class TrackedFace:
         )
         self.missed_frames = 0
 
+    def coast_missed_frame(self, frame_w: int, frame_h: int) -> None:
+        """Coast bounding box slightly along damped walking velocity when 1-10 frames are missed."""
+        self.missed_frames += 1
+        self.vx *= 0.65
+        self.vy *= 0.65
+        top, right, bottom, left = self.box_full
+        dx = int(round(self.vx))
+        dy = int(round(self.vy))
+        bw = max(14, right - left)
+        bh = max(14, bottom - top)
+        nl = max(0, min(frame_w - bw, left + dx))
+        nt = max(0, min(frame_h - bh, top + dy))
+        self.box_full = (nt, min(frame_w, nl + bw), min(frame_h, nt + bh), nl)
+
+    def offer_crop_sample(self, sample: FaceCropSample) -> None:
+        """
+        Keep the sharpest, clearest recent paired crop for the background encoder.
+        Replaces the pending crop if none exists, if the existing crop is stale (>0.28s),
+        or if the new frame has a higher quality score (sharpness + frontalness + size).
+        """
+        self.last_pitch_severity = sample.pitch_severity
+        existing = self.pending_crop
+        if (
+            existing is None
+            or (sample.captured_ts - existing.captured_ts) > 0.28
+            or sample.quality_score >= existing.quality_score * 0.96
+        ):
+            self.pending_crop = sample
+
+    def pop_pending_crop(self) -> Optional[FaceCropSample]:
+        """Take the current best paired crop for encoding."""
+        sample = self.pending_crop
+        self.pending_crop = None
+        return sample
+
     def advance_tracked_frame(self, now_ts: float) -> bool:
         """
-        Advance the 7-frame stability counter on each tracked camera frame (~45 FPS)
+        Advance the stability counter on each tracked camera frame (~30-45 FPS)
         once the background encoder has verified a candidate match.
-        - Strong matches (`distance <= 0.38`) or multi-encoded matches (`verified_encodings_count >= 2`)
-          can advance all the way to `7/7` at camera frame rate (~0.20-0.30s for walking students).
-        - Borderline matches (`distance > 0.38` with only 1 encoding) cap at `6/7` until a 2nd
-          independent 128-d encoding confirms the same student.
+        - Strong matches (`distance <= 0.38`), high-margin overhead matches (`strong_margin`),
+          or multi-encoded matches (`verified_encodings_count >= 2`) advance all the way to
+          `stability_frames` at camera frame rate (~0.20-0.30s for normal walking students).
+        - Borderline matches (`distance > 0.38` with only 1 encoding and tight margin) cap at
+          `stability_frames - 1` until a 2nd independent 128-d encoding confirms the same student.
         """
         if self.label == "Unknown":
             if self.candidate_label == "Unknown":
                 self.pre_encoded_track_frames = min(4, self.pre_encoded_track_frames + 1)
                 return False
 
-            if (now_ts - self.last_encoded_ts) <= 0.65:
-                if self.distance <= 0.38 or self.verified_encodings_count >= 2:
+            if (now_ts - self.last_encoded_ts) <= 0.85:
+                if (
+                    self.distance <= 0.38
+                    or self.strong_margin
+                    or self.verified_encodings_count >= 2
+                ):
                     self.stable_frames = min(self.stability_frames, self.stable_frames + 1)
                     if self.stable_frames >= self.stability_frames:
                         self.label = self.candidate_label
@@ -245,12 +316,12 @@ class TrackedFace:
 
     def get_smoothed_encoding(self, new_enc: np.ndarray) -> np.ndarray:
         """
-        Return the temporally smoothed 128-d encoding across recent frames in the 7-frame window,
+        Return the temporally smoothed 128-d encoding across recent frames in the window,
         preserving vector norm so random single-frame landmark noise cancels out.
         """
         if not self.encoding_history:
             return new_enc
-        recent = [e for e in self.encoding_history if float(np.linalg.norm(new_enc - e)) <= 0.38]
+        recent = [e for e in self.encoding_history if float(np.linalg.norm(new_enc - e)) <= 0.40]
         recent.append(new_enc)
         if len(recent) == 1:
             return new_enc
@@ -266,29 +337,34 @@ class TrackedFace:
         dist_score: float,
         encoding: np.ndarray,
         now_ts: float,
+        strong_margin: bool = False,
+        is_low_quality: bool = False,
     ) -> bool:
         """
-        Update the 7-frame stability state machine with a new frame's match result.
+        Update the stability state machine with a new frame's match result.
         Returns True if the identity is confirmed (or re-confirmed) across `self.stability_frames` frames.
         """
         self.last_encoded_ts = now_ts
         self.distance = dist_score
         self.frame_votes.append(matched_id)
 
-        # Case 1: Not yet confirmed (building up to 7 stable frames)
+        # Case 1: Not yet confirmed (building up to `stability_frames` stable frames)
         if self.label == "Unknown":
             if matched_id != "Unknown":
-                bonus = min(3, self.pre_encoded_track_frames) if dist_score <= 0.38 else 0
+                is_strong = dist_score <= 0.38 or strong_margin
+                bonus = min(3, self.pre_encoded_track_frames) if is_strong else 0
                 self.pre_encoded_track_frames = 0
 
                 if matched_id == self.candidate_label:
                     self.verified_encodings_count += 1
+                    self.strong_margin = self.strong_margin or strong_margin
                     self.encoding_history.append(encoding)
                     self.stable_frames = min(self.stability_frames, self.stable_frames + 1 + bonus)
                 else:
-                    # Switched candidate: require a fresh 7-frame streak for the new candidate
+                    # Switched candidate: require a fresh streak for the new candidate
                     self.candidate_label = matched_id
                     self.verified_encodings_count = 1
+                    self.strong_margin = strong_margin
                     self.encoding_history.clear()
                     self.encoding_history.append(encoding)
                     if bonus > 0 and self.stability_frames > 1:
@@ -302,21 +378,28 @@ class TrackedFace:
                     self.challenger_frames = 0
                     return True
             else:
-                # Ambiguous / Unknown frame: decay stability counter so 1-2 frame false matches never confirm
+                # Motion-blurred / extreme-angle walking frame: ignore rather than wiping progress
+                if is_low_quality and self.stable_frames > 0:
+                    return False
+                # Ambiguous / Unknown sharp frame: decay stability counter so false matches never confirm
                 self.stable_frames = max(0, self.stable_frames - 1)
                 if self.stable_frames == 0:
                     self.candidate_label = "Unknown"
                     self.verified_encodings_count = 0
+                    self.strong_margin = False
                     self.encoding_history.clear()
             return False
 
-        # Case 2: Already confirmed across 7 frames -> keep rock-solid unless 7 frames disagree
+        # Case 2: Already confirmed -> keep rock-solid unless `stability_frames` disagree
         if matched_id == self.label:
             self.encoding_history.append(encoding)
             self.stable_frames = self.stability_frames
             self.challenger_label = "Unknown"
             self.challenger_frames = 0
             return True
+
+        if is_low_quality and matched_id == "Unknown":
+            return False
 
         # A different label or "Unknown" appeared on this frame while already confirmed
         if matched_id == self.challenger_label:
@@ -326,7 +409,7 @@ class TrackedFace:
             self.challenger_frames = 1
 
         if self.challenger_frames >= self.stability_frames:
-            # The new state persisted for a full 7 frames -> transition state
+            # The new state persisted for a full `stability_frames` -> transition state
             self.label = self.challenger_label
             self.candidate_label = self.challenger_label
             self.encoding_history.clear()
@@ -338,6 +421,7 @@ class TrackedFace:
                 return True
             else:
                 self.stable_frames = 0
+                self.strong_margin = False
                 self.challenger_label = "Unknown"
                 self.challenger_frames = 0
         return False
@@ -369,6 +453,7 @@ class VisionEngine:
         match_tolerance: float = DEFAULT_MATCH_TOLERANCE,
         min_match_margin: float = DEFAULT_MIN_MATCH_MARGIN,
         stability_frames: int = DEFAULT_STABILITY_FRAMES,
+        high_camera_mode: bool = DEFAULT_HIGH_CAMERA_MODE,
     ) -> None:
         self.store = store
         self.faces_dir = faces_dir
@@ -378,9 +463,12 @@ class VisionEngine:
         self.match_tolerance = match_tolerance
         self.min_match_margin = min_match_margin
         self.stability_frames = max(1, int(stability_frames))
+        self.high_camera_mode = bool(high_camera_mode)
         self.show_window = True
 
         self._switch_camera_requested: Optional[int] = None
+        self._reopen_camera_requested: bool = False
+        self._capture_resolution: Tuple[int, int] = (0, 0)
 
         # Locks for thread safety
         self._dlib_lock = threading.RLock()
@@ -404,6 +492,7 @@ class VisionEngine:
         self._encode_event = threading.Event()
 
         self._latest_raw_frame: Optional[np.ndarray] = None
+        self._raw_frame_seq: int = 0
         self._latest_jpeg: Optional[bytes] = None
         self._camera_active = False
 
@@ -420,7 +509,7 @@ class VisionEngine:
         self._status_banner: str = ""
         self._status_banner_until: float = 0.0
 
-        # Initialize YuNet long-distance face detector (detects faces up to 5-6m away in ~7ms)
+        # Initialize YuNet long-distance face detector (detects faces up to 5-6m away in ~7-12ms)
         self._yunet_detector = None
         self._yunet_input_size: Tuple[int, int] = (0, 0)
         self._init_yunet_detector()
@@ -432,7 +521,7 @@ class VisionEngine:
             self.store.register_faces_updated_callback(self.load_known_faces)
 
     def _init_yunet_detector(self) -> None:
-        """Initialize OpenCV YuNet deep face detector for long-distance school detection."""
+        """Initialize OpenCV YuNet deep face detector for long-distance high-mount school detection."""
         if not hasattr(cv2, "FaceDetectorYN"):
             return
         try:
@@ -443,7 +532,7 @@ class VisionEngine:
                 str(YUNET_MODEL_PATH),
                 "",
                 (640, 480),
-                0.45,  # Fast early detection for walking/distant students with slight motion blur
+                0.38,  # Early acquisition for high-mounted overhead/distant walking students
                 0.3,
                 5000,
             )
@@ -453,20 +542,63 @@ class VisionEngine:
             logger.warning("Could not initialize YuNet detector (falling back to HOG): %s", exc)
             self._yunet_detector = None
 
-    def _detect_faces_with_landmarks(
-        self, frame_bgr: np.ndarray
-    ) -> List[Tuple[Tuple[int, int, int, int], float, float]]:
+    @staticmethod
+    def _estimate_pitch_severity(
+        landmarks_5pt: Optional[Tuple[Tuple[float, float], ...]],
+        face_w: float,
+    ) -> float:
         """
-        Detect faces across the frame and return `(box_full, score, eye_ratio)` for each face.
-        For ultra-high-resolution images (e.g. > 800px phone uploads), normalizes YuNet input
-        scale so close-up faces fit YuNet's anchor receptive field accurately.
+        Estimate downward overhead pitch severity (0.0 = eye-level frontal, 1.0 = steep high-mounted camera)
+        from YuNet's 5 facial landmarks (right_eye, left_eye, nose, right_mouth, left_mouth).
+        """
+        if not landmarks_5pt or len(landmarks_5pt) < 5:
+            return 0.0
+        re, le, nose, rm, lm = landmarks_5pt[:5]
+        eye_dist = math.hypot(le[0] - re[0], le[1] - re[1])
+        if eye_dist < 2.0 or (eye_dist / max(face_w, 1.0)) < 0.20:
+            return 0.0
+        eye_mid_y = 0.5 * (re[1] + le[1])
+        mouth_mid_y = 0.5 * (rm[1] + lm[1])
+        em_dist = mouth_mid_y - eye_mid_y
+        if em_dist <= 1.0:
+            return 0.0
+        em_ratio = em_dist / eye_dist
+        nose_frac = (nose[1] - eye_mid_y) / em_dist
+
+        # Frontal eye-level faces: em_ratio ~ 0.90..1.15, nose_frac ~ 0.48..0.60
+        # High-mounted overhead cameras: vertical foreshortening compresses em_ratio (< 0.86)
+        # and pushes nose lower relative to eyes->mouth (> 0.61)
+        pitch_em = max(0.0, (0.86 - em_ratio) / 0.30) if em_ratio > 0.30 else 0.0
+        pitch_nose = max(0.0, (nose_frac - 0.61) / 0.22) if nose_frac < 0.95 else 0.0
+        return float(min(1.0, max(pitch_em, 0.7 * pitch_em + 0.4 * pitch_nose)))
+
+    def _detect_faces_with_landmarks_full(
+        self,
+        frame_bgr: np.ndarray,
+        live_mode: bool = False,
+    ) -> List[
+        Tuple[
+            Tuple[int, int, int, int],
+            float,
+            float,
+            Optional[Tuple[Tuple[float, float], ...]],
+        ]
+    ]:
+        """
+        Detect faces across the frame and return `(box_full, score, eye_ratio, landmarks_5pt)`.
+        In live high-camera mode, runs YuNet up to 960px (~12ms) so distant faces approaching
+        a high-mounted camera are acquired 1.5-2.5m earlier.
         """
         h, w = frame_bgr.shape[:2]
 
         if self._yunet_detector is not None:
             try:
                 max_dim = max(h, w)
-                det_scale = 640.0 / float(max_dim) if max_dim > 800 else 1.0
+                if live_mode and self.high_camera_mode:
+                    target_max = 960.0
+                else:
+                    target_max = 640.0
+                det_scale = target_max / float(max_dim) if max_dim > (target_max + 80.0) else 1.0
                 if det_scale < 1.0:
                     det_w = max(64, int(round(w * det_scale)))
                     det_h = max(64, int(round(h * det_scale)))
@@ -481,7 +613,14 @@ class VisionEngine:
                         self._yunet_input_size = (det_w, det_h)
                     _, faces = self._yunet_detector.detect(det_img)
 
-                results: List[Tuple[Tuple[int, int, int, int], float, float]] = []
+                results: List[
+                    Tuple[
+                        Tuple[int, int, int, int],
+                        float,
+                        float,
+                        Optional[Tuple[Tuple[float, float], ...]],
+                    ]
+                ] = []
                 if faces is not None:
                     inv_scale = 1.0 / det_scale
                     for det in faces:
@@ -492,12 +631,13 @@ class VisionEngine:
                         if fw < 14 or fh < 14:
                             continue
 
-                        re_x = float(det[4]) * inv_scale
-                        re_y = float(det[5]) * inv_scale
-                        le_x = float(det[6]) * inv_scale
-                        le_y = float(det[7]) * inv_scale
+                        re = (float(det[4]) * inv_scale, float(det[5]) * inv_scale)
+                        le = (float(det[6]) * inv_scale, float(det[7]) * inv_scale)
+                        nose = (float(det[8]) * inv_scale, float(det[9]) * inv_scale)
+                        rm = (float(det[10]) * inv_scale, float(det[11]) * inv_scale)
+                        lm = (float(det[12]) * inv_scale, float(det[13]) * inv_scale)
                         score = float(det[14]) if len(det) > 14 else 1.0
-                        eye_dist = math.hypot(le_x - re_x, le_y - re_y)
+                        eye_dist = math.hypot(le[0] - re[0], le[1] - re[1])
                         eye_ratio = eye_dist / max(fw, 1.0)
 
                         top = max(0, int(round(fy)))
@@ -505,7 +645,9 @@ class VisionEngine:
                         bottom = min(h, int(round(fy + fh)))
                         right = min(w, int(round(fx + fw)))
                         if (right - left) >= 14 and (bottom - top) >= 14:
-                            results.append(((top, right, bottom, left), score, eye_ratio))
+                            results.append(
+                                ((top, right, bottom, left), score, eye_ratio, (re, le, nose, rm, lm))
+                            )
                 return results
             except Exception as exc:
                 logger.debug("YuNet detect error: %s", exc)
@@ -515,9 +657,22 @@ class VisionEngine:
             rgb_half = cv2.cvtColor(half, cv2.COLOR_BGR2RGB)
             with self._dlib_lock:
                 locs = face_recognition.face_locations(rgb_half, number_of_times_to_upsample=1, model="hog")
-            return [((t * 2, r * 2, b * 2, l * 2), 1.0, 0.42) for (t, r, b, l) in locs]
+            return [((t * 2, r * 2, b * 2, l * 2), 1.0, 0.42, None) for (t, r, b, l) in locs]
 
         return []
+
+    def _detect_faces_with_landmarks(
+        self, frame_bgr: np.ndarray
+    ) -> List[Tuple[Tuple[int, int, int, int], float, float]]:
+        """
+        Detect faces across the frame and return `(box_full, score, eye_ratio)` for each face.
+        """
+        return [
+            (box, score, eye_ratio)
+            for (box, score, eye_ratio, _lm) in self._detect_faces_with_landmarks_full(
+                frame_bgr, live_mode=False
+            )
+        ]
 
     def _detect_faces_full_frame(self, frame_bgr: np.ndarray) -> List[Tuple[int, int, int, int]]:
         """
@@ -525,64 +680,147 @@ class VisionEngine:
         (0.3m - 6m from the camera) are detected immediately upon entering the camera view.
         Returns list of (top, right, bottom, left) in full-frame pixel coordinates.
         """
-        detections = self._detect_faces_with_landmarks(frame_bgr)
+        detections = self._detect_faces_with_landmarks_full(frame_bgr, live_mode=True)
         # Filter out extreme 90-degree 1-eye profile false/unalignable boxes (eye_ratio < 0.14)
-        return [box for (box, _score, eye_ratio) in detections if eye_ratio >= 0.14]
+        return [box for (box, _score, eye_ratio, _lm) in detections if eye_ratio >= 0.14]
 
-    def _encode_face_box(
+    def _extract_paired_crop(
         self,
         frame_bgr: np.ndarray,
         box_full: Tuple[int, int, int, int],
-    ) -> Optional[np.ndarray]:
+        det_score: float,
+        eye_ratio: float,
+        landmarks_5pt: Optional[Tuple[Tuple[float, float], ...]],
+        captured_ts: float,
+        frame_seq: int,
+    ) -> Optional[FaceCropSample]:
         """
-        Extract a 128-d face array from `box_full = (top, right, bottom, left)` at ANY distance!
-        If the person is far from the camera (small face box, e.g. 20x20 to 120x120 px),
-        crops the face with context padding from the full frame and upscales it with
-        Lanczos-4 interpolation to a normalized ~160x160 face size before running dlib's
-        68-point landmark alignment & 128-d ResNet encoder.
+        Extract an exact padded face crop + sharpness/quality score directly from the detection frame.
+        Eliminates frame-vs-box lag and lets the encoder pick the sharpest walking frame.
         """
-        if not FACE_RECOGNITION_AVAILABLE:
-            return None
-
         h, w = frame_bgr.shape[:2]
         top, right, bottom, left = box_full
         fw = max(1, right - left)
         fh = max(1, bottom - top)
 
-        # Add 35% context margin around the face so forehead, chin, and ears are included
-        pad_x = int(fw * 0.35)
-        pad_y = int(fh * 0.35)
+        pad_x = int(fw * 0.40)
+        pad_y = int(fh * 0.40)
         crop_top = max(0, top - pad_y)
         crop_bottom = min(h, bottom + pad_y)
         crop_left = max(0, left - pad_x)
         crop_right = min(w, right + pad_x)
 
-        crop_bgr = frame_bgr[crop_top:crop_bottom, crop_left:crop_right]
+        crop_bgr = frame_bgr[crop_top:crop_bottom, crop_left:crop_right].copy()
         if crop_bgr.size == 0:
             return None
 
-        # Relative face box inside crop_bgr
-        rel_top = top - crop_top
-        rel_left = left - crop_left
-        rel_bottom = bottom - crop_top
-        rel_right = right - crop_left
+        rel_box = (
+            top - crop_top,
+            right - crop_left,
+            bottom - crop_top,
+            left - crop_left,
+        )
+        rel_lm: Optional[Tuple[Tuple[float, float], ...]] = None
+        if landmarks_5pt is not None:
+            rel_lm = tuple((px - crop_left, py - crop_top) for (px, py) in landmarks_5pt)
 
-        # Normalize face scale to ~160px wide so distant small faces and close-up faces
-        # are encoded at the exact same resolution!
+        # Fast Laplacian sharpness on normalized 64x64 grayscale face patch (<0.15ms)
+        face_roi = frame_bgr[top:bottom, left:right]
+        if face_roi.size > 0:
+            gray = cv2.cvtColor(face_roi, cv2.COLOR_BGR2GRAY)
+            gray_norm = cv2.resize(gray, (64, 64), interpolation=cv2.INTER_AREA)
+            sharpness = float(cv2.Laplacian(gray_norm, cv2.CV_64F).var())
+        else:
+            sharpness = 0.0
+
+        pitch_severity = self._estimate_pitch_severity(landmarks_5pt, float(fw))
+        # Composite quality score balancing sharpness (anti-motion-blur), detector confidence, frontalness, and size
+        sharp_norm = min(1.0, math.log1p(max(0.0, sharpness)) / 6.0)
+        frontal_norm = min(1.0, max(0.0, (eye_ratio - 0.14) / 0.28))
+        size_norm = min(1.0, float(fw) / 110.0)
+        quality_score = (
+            0.42 * sharp_norm
+            + 0.26 * min(1.0, max(0.0, det_score))
+            + 0.20 * frontal_norm
+            + 0.12 * size_norm
+        )
+
+        return FaceCropSample(
+            crop_bgr=crop_bgr,
+            rel_box=rel_box,
+            rel_landmarks=rel_lm,
+            face_w=fw,
+            det_score=det_score,
+            sharpness=sharpness,
+            quality_score=quality_score,
+            pitch_severity=pitch_severity,
+            captured_ts=captured_ts,
+            frame_seq=frame_seq,
+        )
+
+    def _encode_face_crop(
+        self,
+        crop_bgr: np.ndarray,
+        rel_box: Tuple[int, int, int, int],
+        rel_landmarks: Optional[Tuple[Tuple[float, float], ...]] = None,
+        enhance_for_high_cam: bool = False,
+    ) -> Optional[np.ndarray]:
+        """
+        Extract a 128-d face array from an already-paired face crop with single-pass normalization:
+        1. Roll alignment (3..35 deg) using YuNet eye landmarks if tilted under an overhead corner camera.
+        2. Single-pass scale normalization to ~160px face size (Lanczos-4 for distant small faces).
+        3. Adaptive overhead shadow / backlit CLAHE+gamma normalization ONLY when dark or low-contrast.
+        """
+        if not FACE_RECOGNITION_AVAILABLE or crop_bgr is None or crop_bgr.size == 0:
+            return None
+
+        work_bgr = crop_bgr
+        rel_top, rel_right, rel_bottom, rel_left = rel_box
+        fw = max(1, rel_right - rel_left)
+        fh = max(1, rel_bottom - rel_top)
+
+        # 1. Eye-level roll alignment ONLY for steep head tilts (>= 18 deg) where dlib's
+        #    built-in pose aligner struggles; smaller tilts stay un-warped to avoid interpolation blur.
+        if enhance_for_high_cam and rel_landmarks and len(rel_landmarks) >= 2:
+            re, le = rel_landmarks[0], rel_landmarks[1]
+            dx, dy = le[0] - re[0], le[1] - re[1]
+            eye_dist = math.hypot(dx, dy)
+            if eye_dist > 3.0:
+                angle = math.degrees(math.atan2(dy, dx))
+                if 18.0 <= abs(angle) <= 45.0:
+                    ch, cw = work_bgr.shape[:2]
+                    center = ((rel_left + rel_right) * 0.5, (rel_top + rel_bottom) * 0.5)
+                    rot_mat = cv2.getRotationMatrix2D(center, angle, 1.0)
+                    work_bgr = cv2.warpAffine(
+                        work_bgr,
+                        rot_mat,
+                        (cw, ch),
+                        flags=cv2.INTER_LINEAR,
+                        borderMode=cv2.BORDER_REPLICATE,
+                    )
+
+        # 2. Single-pass scale normalization to ~160px wide (no double-resizing blur!)
         target_face_size = 160.0
         scale = target_face_size / float(max(fw, fh))
-
         if scale > 1.15 or scale < 0.85:
-            new_w = max(64, int(crop_bgr.shape[1] * scale))
-            new_h = max(64, int(crop_bgr.shape[0] * scale))
+            new_w = max(64, int(round(work_bgr.shape[1] * scale)))
+            new_h = max(64, int(round(work_bgr.shape[0] * scale)))
             interp = cv2.INTER_LANCZOS4 if scale > 1.0 else cv2.INTER_AREA
-            crop_bgr = cv2.resize(crop_bgr, (new_w, new_h), interpolation=interp)
-            rel_top = int(rel_top * scale)
-            rel_bottom = int(rel_bottom * scale)
-            rel_left = int(rel_left * scale)
-            rel_right = int(rel_right * scale)
+            work_bgr = cv2.resize(work_bgr, (new_w, new_h), interpolation=interp)
+            rel_top = int(round(rel_top * scale))
+            rel_bottom = int(round(rel_bottom * scale))
+            rel_left = int(round(rel_left * scale))
+            rel_right = int(round(rel_right * scale))
 
-        rgb_patch = cv2.cvtColor(crop_bgr, cv2.COLOR_BGR2RGB)
+        # 3. Gentle linear gain ONLY for severely underexposed near-black backlit faces (mean < 28)
+        #    so dlib's natural RGB distribution is preserved in normal/dim indoor lighting.
+        if enhance_for_high_cam:
+            mean_v = float(np.mean(work_bgr))
+            if 1.0 < mean_v < 28.0:
+                gain = min(2.2, 48.0 / mean_v)
+                work_bgr = np.clip(work_bgr.astype(np.float32) * gain, 0.0, 255.0).astype(np.uint8)
+
+        rgb_patch = cv2.cvtColor(work_bgr, cv2.COLOR_BGR2RGB)
         scaled_box = (
             max(0, rel_top),
             min(rgb_patch.shape[1], rel_right),
@@ -595,6 +833,55 @@ class VisionEngine:
             if not encodings:
                 return None
             return encodings[0]
+
+    def _encode_face_box(
+        self,
+        frame_bgr: np.ndarray,
+        box_full: Tuple[int, int, int, int],
+        landmarks_5pt: Optional[Tuple[Tuple[float, float], ...]] = None,
+        enhance_for_high_cam: bool = False,
+    ) -> Optional[np.ndarray]:
+        """
+        Extract a 128-d face array from `box_full = (top, right, bottom, left)` at ANY distance!
+        Crops the face with context padding from the full frame and normalizes it before running
+        dlib's landmark alignment & 128-d ResNet encoder.
+        """
+        if not FACE_RECOGNITION_AVAILABLE:
+            return None
+
+        h, w = frame_bgr.shape[:2]
+        top, right, bottom, left = box_full
+        fw = max(1, right - left)
+        fh = max(1, bottom - top)
+
+        pad_x = int(fw * 0.35)
+        pad_y = int(fh * 0.35)
+        crop_top = max(0, top - pad_y)
+        crop_bottom = min(h, bottom + pad_y)
+        crop_left = max(0, left - pad_x)
+        crop_right = min(w, right + pad_x)
+
+        crop_bgr = frame_bgr[crop_top:crop_bottom, crop_left:crop_right]
+        if crop_bgr.size == 0:
+            return None
+
+        rel_box = (
+            top - crop_top,
+            right - crop_left,
+            bottom - crop_top,
+            left - crop_left,
+        )
+        rel_lm = (
+            tuple((px - crop_left, py - crop_top) for (px, py) in landmarks_5pt)
+            if landmarks_5pt is not None
+            else None
+        )
+        return self._encode_face_crop(
+            crop_bgr,
+            rel_box,
+            rel_landmarks=rel_lm,
+            enhance_for_high_cam=enhance_for_high_cam,
+        )
 
     def _extract_array_from_bgr(
         self,
@@ -689,6 +976,7 @@ class VisionEngine:
         if not force and sig == self._last_folder_signature:
             return len(self.known_person_arrays)
 
+        prev_sig = self._last_folder_signature
         self._last_folder_signature = sig
         if not FACE_RECOGNITION_AVAILABLE:
             return 0
@@ -724,7 +1012,8 @@ class VisionEngine:
 
         for label, img_paths in grouped_images.items():
             existing = face_data.get(label, [])
-            if not force and len(existing) >= len(img_paths) and len(existing) > 0:
+            # On initial startup (prev_sig == ""), skip labels that already have arrays so startup stays instant
+            if not force and len(existing) > 0 and (prev_sig == "" or len(existing) >= len(img_paths)):
                 continue
 
             extracted_arrays: List[List[float]] = []
@@ -1212,30 +1501,33 @@ class VisionEngine:
         self._status_banner = text
         self._status_banner_until = time.monotonic() + duration
 
-    def _match_encoding(
+    def _match_encoding_detailed(
         self,
         face_encoding: np.ndarray,
         face_width_px: int = 120,
-    ) -> Tuple[str, float]:
+        pitch_severity: float = 0.0,
+    ) -> Tuple[str, float, float]:
         """
         Compare a live 128-d face array against stored person arrays with disambiguation
-        for similar arrays across different people:
-        1. Hybrid score combining closest sample (`min_d`), top-2 sample average (`top2_avg`),
-           and norm-preserved inlier centroid distance (`centroid_d`).
-        2. Cosine direction consistency check against the person's centroid.
-        3. Second-best margin check (`self.min_match_margin`) so frames that fall ambiguously
-           between two people with similar arrays are rejected as "Unknown" instead of flipping.
+        for similar arrays across different people, plus high-camera pitch/distance compensation.
+        Returns `(matched_id, best_score, margin_over_second)`.
         """
         if not self.known_person_arrays:
-            return "Unknown", 1.0
+            return "Unknown", 1.0, 0.0
 
-        # Distance-adaptive threshold:
-        # Close range (>= 90px face): self.match_tolerance (0.42)
-        # Medium/Far range (20px..89px face): conservative margin up to +0.025 (max 0.445)
+        # Distance & overhead-pitch adaptive threshold:
+        # - Close frontal face (>= 90px, pitch=0): strict self.match_tolerance (0.42)
+        # - Distant small face (< 90px): conservative margin up to +0.030
+        # - High-mounted overhead pitch (high_camera_mode): up to +0.030 * pitch_severity
+        # Total extra tolerance capped at +0.045 so impostor protection remains strong.
         extra_far_margin = 0.0
         if face_width_px < 90:
-            extra_far_margin = min(0.025, (90 - face_width_px) / 90.0 * 0.03)
-        effective_tolerance = self.match_tolerance + extra_far_margin
+            extra_far_margin = min(0.030, (90 - face_width_px) / 90.0 * 0.035)
+        extra_pitch_margin = 0.0
+        if getattr(self, "high_camera_mode", True) and pitch_severity > 0.0:
+            extra_pitch_margin = min(0.030, pitch_severity * 0.032)
+        extra_total = min(0.045, extra_far_margin + extra_pitch_margin)
+        effective_tolerance = self.match_tolerance + extra_total
 
         enc_vec = np.asarray(face_encoding[:128], dtype=np.float64)
         enc_norm = float(np.linalg.norm(enc_vec))
@@ -1267,38 +1559,64 @@ class VisionEngine:
             candidates.append((score, min_d, cos_dist, person_id))
 
         if not candidates:
-            return "Unknown", 1.0
+            return "Unknown", 1.0, 0.0
 
         candidates.sort(key=lambda item: item[0])
         best_score, best_min_d, best_cos_d, best_person = candidates[0]
 
+        cos_limit = 0.065 + (0.020 * pitch_severity if getattr(self, "high_camera_mode", True) else 0.0)
         # 1. Must be within distance tolerance and directionally consistent with the person's cluster
         if (
             best_min_d > effective_tolerance
             or best_score > (effective_tolerance + 0.018)
-            or best_cos_d > 0.065
+            or best_cos_d > cos_limit
         ):
-            return "Unknown", 1.0
+            return "Unknown", 1.0, 0.0
 
         # 2. Distinctiveness / Ambiguity margin check when multiple people are registered:
-        #    If a second person's arrays are nearly as close as the best match, reject this frame
-        #    unless best_min_d is an unmistakable close match (<= 0.34).
-        if len(candidates) >= 2 and best_min_d > 0.34:
+        #    - Always reject near-ties between two people at ANY distance.
+        #    - Above 0.34 distance, enforce the full `min_match_margin` (and 1.15x stricter
+        #      when relying on extra pitch/distance tolerance) so similar students never flip.
+        score_margin = 1.0
+        if len(candidates) >= 2:
             second_score, second_min_d, _, _ = candidates[1]
             score_margin = second_score - best_score
             min_d_margin = second_min_d - best_min_d
-            if score_margin < self.min_match_margin and min_d_margin < (self.min_match_margin * 0.85):
-                return "Unknown", 1.0
+            if best_min_d > 0.34:
+                req_margin = self.min_match_margin * (1.15 if best_min_d > self.match_tolerance else 1.0)
+                if score_margin < req_margin and min_d_margin < (req_margin * 0.85):
+                    return "Unknown", 1.0, 0.0
+            else:
+                if score_margin < 0.022:
+                    return "Unknown", 1.0, 0.0
 
+        return best_person, best_score, score_margin
+
+    def _match_encoding(
+        self,
+        face_encoding: np.ndarray,
+        face_width_px: int = 120,
+        pitch_severity: float = 0.0,
+    ) -> Tuple[str, float]:
+        """
+        Compare a live 128-d face array against stored person arrays with disambiguation
+        for similar arrays across different people.
+        """
+        best_person, best_score, _margin = self._match_encoding_detailed(
+            face_encoding,
+            face_width_px=face_width_px,
+            pitch_severity=pitch_severity,
+        )
         return best_person, best_score
 
     def _vision_worker_loop(self) -> None:
         """
-        High-speed (~45-60 FPS) face detection & walking tracker loop.
-        Runs OpenCV YuNet (~15ms) and velocity-predicted bounding box tracking without
-        blocking on 128-d dlib encoding, so walking students are detected the instant they
-        enter the frame and reach 7-frame stability at camera frame rate (~0.25-0.35s).
+        High-speed (~30-60 FPS) face detection & walking tracker loop.
+        Runs OpenCV YuNet on each genuinely new camera frame, captures an exact paired
+        unlagged face crop + sharpness score onto each `TrackedFace`, and tracks walking
+        students with velocity prediction & coasting without blocking on 128-d encoding.
         """
+        last_processed_seq = -1
         while self._running:
             now_ts = time.monotonic()
             if (now_ts - self._last_folder_check_ts) > 2.0:
@@ -1309,25 +1627,33 @@ class VisionEngine:
                     pass
 
             with self._frame_lock:
-                frame = self._latest_raw_frame.copy() if self._latest_raw_frame is not None else None
+                frame_seq = self._raw_frame_seq
+                if self._latest_raw_frame is not None and frame_seq != last_processed_seq:
+                    frame = self._latest_raw_frame.copy()
+                else:
+                    frame = None
 
             if frame is None or not FACE_RECOGNITION_AVAILABLE:
-                time.sleep(0.02)
+                time.sleep(0.005)
                 continue
 
-            try:
-                # 1. Fast full-frame YuNet face detection (~15ms)
-                boxes_full = self._detect_faces_full_frame(frame)
+            last_processed_seq = frame_seq
+            frame_h, frame_w = frame.shape[:2]
 
-                if not boxes_full:
+            try:
+                # 1. Fast YuNet face detection + 5-point landmarks (~7-12ms)
+                raw_dets = self._detect_faces_with_landmarks_full(frame, live_mode=True)
+                valid_dets = [d for d in raw_dets if d[2] >= 0.14]
+
+                if not valid_dets:
                     with self._track_lock:
                         kept_tracks: List[TrackedFace] = []
                         for tf in self._tracked_faces:
-                            tf.missed_frames += 1
+                            tf.coast_missed_frame(frame_w, frame_h)
                             if tf.missed_frames <= MAX_MISSED_TRACK_FRAMES:
                                 kept_tracks.append(tf)
                         self._tracked_faces = kept_tracks
-                    time.sleep(0.012)
+                    time.sleep(0.004)
                     continue
 
                 with self._track_lock:
@@ -1338,13 +1664,13 @@ class VisionEngine:
                 any_needs_encoding = False
                 newly_confirmed_labels: List[str] = []
 
-                for box_full in boxes_full:
+                for box_full, det_score, eye_ratio, landmarks_5pt in valid_dets:
                     top, right, bottom, left = box_full
                     cx = (left + right) * 0.5
                     cy = (top + bottom) * 0.5
                     box_w = max(right - left, 24)
-                    # Wider association radius + velocity prediction so walking students never lose track
-                    assoc_radius = max(box_w * 1.65, 110.0)
+                    # Wider association radius + velocity prediction so brisk walkers never lose track
+                    assoc_radius = max(box_w * 2.0, 125.0)
 
                     best_old_idx = -1
                     best_dist = float("inf")
@@ -1378,30 +1704,51 @@ class VisionEngine:
                         )
                         tf.pre_encoded_track_frames = 1
 
+                    # Capture exact paired unlagged crop from THIS frame (zero frame-vs-box lag!)
+                    # Only offer crops that meet minimum detector score for encoding
+                    if det_score >= 0.42:
+                        crop_sample = self._extract_paired_crop(
+                            frame,
+                            box_full,
+                            det_score=det_score,
+                            eye_ratio=eye_ratio,
+                            landmarks_5pt=landmarks_5pt,
+                            captured_ts=now_ts,
+                            frame_seq=frame_seq,
+                        )
+                        if crop_sample is not None:
+                            tf.offer_crop_sample(crop_sample)
+
                     new_tracked.append(tf)
 
+                    # Already-confirmed tracks only re-check every 2.5s so new walking students get 100% priority
+                    recheck_interval = 2.5 if tf.is_stable else 0.0
                     needs_encoding = (
-                        not tf.is_stable
-                        or tf.challenger_frames > 0
-                        or (now_ts - tf.last_encoded_ts) > 0.45
+                        tf.pending_crop is not None
+                        and (
+                            not tf.is_stable
+                            or tf.challenger_frames > 0
+                            or (now_ts - tf.last_encoded_ts) > recheck_interval
+                        )
                     )
                     if self.known_person_arrays and needs_encoding:
                         any_needs_encoding = True
 
-                # Keep any recently tracked face that momentarily missed 1-5 detector frames while walking
+                # Keep any recently tracked face that momentarily missed 1-10 frames while walking
                 for o_idx, old_tf in enumerate(old_tracked):
                     if o_idx not in used_old:
-                        old_tf.missed_frames += 1
+                        old_tf.coast_missed_frame(frame_w, frame_h)
                         if old_tf.missed_frames <= MAX_MISSED_TRACK_FRAMES:
                             ocx, ocy = old_tf.center
                             overlaps_new = any(
-                                math.hypot(ocx - tf.center[0], ocy - tf.center[1]) < max(tf.width * 0.75, 45.0)
+                                math.hypot(ocx - tf.center[0], ocy - tf.center[1])
+                                < max(tf.width * 0.75, 45.0)
                                 for tf in new_tracked
                             )
                             if not overlaps_new:
                                 new_tracked.append(old_tf)
 
-                # Immediately publish updated bounding boxes so labels move smoothly at 45+ FPS
+                # Immediately publish updated bounding boxes so labels move smoothly at 30-45+ FPS
                 with self._track_lock:
                     self._tracked_faces = new_tracked
 
@@ -1421,13 +1768,14 @@ class VisionEngine:
             except Exception as exc:
                 logger.debug("Vision worker iteration error: %s", exc)
 
-            time.sleep(0.008)
+            time.sleep(0.002)
 
     def _encoder_worker_loop(self) -> None:
         """
         Dedicated parallel background thread for 128-d dlib ResNet face encoding &
-        similar-array disambiguation. Runs asynchronously so `_vision_worker_loop`
-        never stalls while a student is walking across the camera frame.
+        similar-array disambiguation. Encodes the sharpest exact paired crop captured
+        by `_vision_worker_loop` and prioritizes newly entering walking students over
+        already-confirmed faces.
         """
         while self._running:
             self._encode_event.wait(timeout=0.05)
@@ -1438,88 +1786,121 @@ class VisionEngine:
             if not self.known_person_arrays or not FACE_RECOGNITION_AVAILABLE:
                 continue
 
-            with self._frame_lock:
-                frame = self._latest_raw_frame.copy() if self._latest_raw_frame is not None else None
-            if frame is None:
-                continue
-
             now_ts = time.monotonic()
             with self._track_lock:
-                # Prioritize unconfirmed faces first so walking students verify immediately
-                candidates_to_encode: List[Tuple[TrackedFace, Tuple[int, int, int, int]]] = []
-                for tf in self._tracked_faces:
-                    if tf.missed_frames > 0:
-                        continue
-                    needs_enc = (
-                        not tf.is_stable
-                        or tf.challenger_frames > 0
-                        or (now_ts - tf.last_encoded_ts) > 0.45
-                    )
-                    if needs_enc:
-                        candidates_to_encode.append((tf, tf.box_full))
+                unconfirmed: List[TrackedFace] = []
+                challengers: List[TrackedFace] = []
+                stable_recheck: List[TrackedFace] = []
 
-                candidates_to_encode.sort(
-                    key=lambda item: (
-                        0 if not item[0].is_stable else 1,
-                        item[0].last_encoded_ts,
+                for tf in self._tracked_faces:
+                    if tf.missed_frames > 0 or tf.pending_crop is None:
+                        continue
+                    if not tf.is_stable:
+                        unconfirmed.append(tf)
+                    elif tf.challenger_frames > 0:
+                        challengers.append(tf)
+                    elif (now_ts - tf.last_encoded_ts) > 2.5:
+                        stable_recheck.append(tf)
+
+                # Prioritize newly walking unconfirmed faces (fewest encodings first, then sharpest crop)
+                unconfirmed.sort(
+                    key=lambda tf: (
+                        tf.verified_encodings_count,
+                        -(tf.pending_crop.quality_score if tf.pending_crop else 0.0),
                     )
                 )
+                # Never waste 210ms re-encoding already-confirmed faces while walking students await ID!
+                if unconfirmed:
+                    candidates_to_encode = unconfirmed + challengers
+                else:
+                    candidates_to_encode = challengers + stable_recheck
 
-            for tf, box_full in candidates_to_encode:
+            for tf in candidates_to_encode:
                 if not self._running:
                     break
                 try:
-                    # Grab the freshest frame and latest tracked box for this face before encoding
-                    with self._frame_lock:
-                        latest_frame = (
-                            self._latest_raw_frame.copy()
-                            if self._latest_raw_frame is not None
-                            else frame
-                        )
                     with self._track_lock:
                         if tf not in self._tracked_faces:
                             continue
-                        current_box = tf.box_full
+                        crop_sample = tf.pop_pending_crop()
+                    if crop_sample is None:
+                        continue
 
-                    enc = self._encode_face_box(latest_frame, current_box)
+                    enc = self._encode_face_crop(
+                        crop_sample.crop_bgr,
+                        crop_sample.rel_box,
+                        rel_landmarks=crop_sample.rel_landmarks,
+                        enhance_for_high_cam=self.high_camera_mode,
+                    )
                     if enc is None:
                         continue
 
                     enc_ts = time.monotonic()
-                    face_w = max(1, current_box[1] - current_box[3])
-                    raw_id, raw_score = self._match_encoding(enc, face_width_px=face_w)
+                    face_w = crop_sample.face_w
+                    pitch_sev = crop_sample.pitch_severity
+
+                    raw_id, raw_score, raw_margin = self._match_encoding_detailed(
+                        enc,
+                        face_width_px=face_w,
+                        pitch_severity=pitch_sev,
+                    )
 
                     with self._track_lock:
                         if tf not in self._tracked_faces:
                             continue
                         smooth_enc = tf.get_smoothed_encoding(enc)
+                        current_candidate = tf.candidate_label
+                        history_len = len(tf.encoding_history)
 
-                    smooth_id, smooth_score = self._match_encoding(smooth_enc, face_width_px=face_w)
+                    smooth_id, smooth_score, smooth_margin = self._match_encoding_detailed(
+                        smooth_enc,
+                        face_width_px=face_w,
+                        pitch_severity=pitch_sev,
+                    )
 
+                    effective_margin = 0.0
                     if raw_id != "Unknown" and smooth_id == raw_id:
                         matched_id = raw_id
                         dist_score = min(raw_score, smooth_score)
-                    elif raw_id != "Unknown" and len(tf.encoding_history) == 0:
+                        effective_margin = max(raw_margin, smooth_margin)
+                    elif raw_id != "Unknown" and raw_id == current_candidate:
                         matched_id = raw_id
                         dist_score = raw_score
-                    elif raw_id != "Unknown" and raw_score <= 0.34:
+                        effective_margin = raw_margin
+                    elif raw_id != "Unknown" and (
+                        history_len == 0 or raw_score <= 0.37 or raw_margin >= 0.055
+                    ):
                         matched_id = raw_id
                         dist_score = raw_score
-                    elif smooth_id != "Unknown" and smooth_score <= 0.35:
+                        effective_margin = raw_margin
+                    elif smooth_id != "Unknown" and smooth_score <= 0.38:
                         matched_id = smooth_id
                         dist_score = smooth_score
+                        effective_margin = smooth_margin
                     else:
                         matched_id = "Unknown"
                         dist_score = 1.0
 
+                    # Strong-margin high-camera match: unmistakable separation from #2 allows 1-encoding fast-walk confirmation
+                    is_strong_margin = bool(
+                        self.high_camera_mode
+                        and matched_id != "Unknown"
+                        and dist_score <= 0.405
+                        and effective_margin >= 0.055
+                    )
+                    is_low_quality = crop_sample.sharpness < MIN_SHARPNESS_FOR_DECAY
+
                     confirmed_label: Optional[str] = None
                     with self._track_lock:
                         if tf in self._tracked_faces:
+                            tf.last_encoded_frame_seq = crop_sample.frame_seq
                             confirmed = tf.record_frame_match(
                                 matched_id=matched_id,
                                 dist_score=dist_score,
                                 encoding=enc,
                                 now_ts=enc_ts,
+                                strong_margin=is_strong_margin,
+                                is_low_quality=is_low_quality,
                             )
                             if confirmed and tf.label != "Unknown":
                                 confirmed_label = tf.label
@@ -1591,9 +1972,10 @@ class VisionEngine:
             if self.camera_index == 1
             else f"CAMERA [Index {self.camera_index}]"
         )
+        mode_tag = "HIGH-CAM" if self.high_camera_mode else "EYE-LEVEL"
         hud_text = (
-            f"{cam_label} ({self.stability_frames}-Frame Stable) | Saved: {len(self.known_person_arrays)} "
-            f"| 'C': Capture | 'W': Switch Cam"
+            f"{cam_label} [{mode_tag} | {self.stability_frames}F] | Saved: {len(self.known_person_arrays)} "
+            f"| 'C': Capture | 'W': Switch | 'H': Mode"
         )
         cv2.putText(
             annotated,
@@ -1626,11 +2008,46 @@ class VisionEngine:
     ) -> Tuple[np.ndarray, List[Tuple[str, Tuple[int, int, int, int]]]]:
         with self._frame_lock:
             self._latest_raw_frame = frame.copy()
+            self._raw_frame_seq += 1
         return self._draw_annotations(frame)
 
     def get_latest_jpeg(self) -> Optional[bytes]:
         with self._frame_lock:
             return self._latest_jpeg
+
+    def configure_vision(
+        self,
+        high_camera_mode: Optional[bool] = None,
+        stability_frames: Optional[int] = None,
+    ) -> dict:
+        """Dynamically adjust High-Camera Mode and stability frame count without restarting."""
+        mode_changed = False
+        if high_camera_mode is not None:
+            new_mode = bool(high_camera_mode)
+            if new_mode != self.high_camera_mode:
+                self.high_camera_mode = new_mode
+                mode_changed = True
+                self._reopen_camera_requested = True
+
+        if stability_frames is not None:
+            clamped = max(3, min(10, int(stability_frames)))
+            self.stability_frames = clamped
+            with self._track_lock:
+                for tf in self._tracked_faces:
+                    tf.stability_frames = clamped
+
+        mode_str = "HIGH-CAM HD (Walking)" if self.high_camera_mode else "EYE-LEVEL Standard"
+        if mode_changed or stability_frames is not None:
+            self._set_banner(
+                f"Mode: {mode_str} | Stability: {self.stability_frames} frames",
+                duration=3.0,
+            )
+            logger.info(
+                "Vision configured: high_camera_mode=%s, stability_frames=%d",
+                self.high_camera_mode,
+                self.stability_frames,
+            )
+        return self.get_status()
 
     def start_background_capture(self) -> None:
         if self._running:
@@ -1642,7 +2059,7 @@ class VisionEngine:
         self._encoder_thread.start()
         self._capture_thread = threading.Thread(target=self._capture_loop, daemon=True)
         self._capture_thread.start()
-        logger.info("VisionEngine started (Fast 45+ FPS Walking Tracker + Parallel 128-d Array Encoder).")
+        logger.info("VisionEngine started (High-Mount Fast-Walk Tracker + Sharpest-Crop 128-d Encoder).")
 
     def stop_background_capture(self) -> None:
         self._running = False
@@ -1660,14 +2077,47 @@ class VisionEngine:
         self._switch_camera_requested = new_index
         return True
 
+    def _configure_dshow_high_res(self, cap: cv2.VideoCapture) -> None:
+        """
+        Safely request 1280x720 MJPG @ 30FPS on DirectShow when `high_camera_mode=True`
+        so students approaching a high-mounted camera have 4x more face pixels at 4-5m.
+        Never called on MSMF so USB webcams cannot hang.
+        """
+        if not self.high_camera_mode:
+            return
+        try:
+            cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*"MJPG"))
+            cap.set(cv2.CAP_PROP_FRAME_WIDTH, DEFAULT_CAPTURE_WIDTH)
+            cap.set(cv2.CAP_PROP_FRAME_HEIGHT, DEFAULT_CAPTURE_HEIGHT)
+            cap.set(cv2.CAP_PROP_FPS, 30)
+        except Exception as exc:
+            logger.debug("Optional HD DSHOW setup skipped: %s", exc)
+
     def _open_camera_pc(self) -> cv2.VideoCapture:
         """
         Open webcam at self.camera_index.
-        Avoids calling CAP_PROP_FRAME_WIDTH/HEIGHT on MSMF so USB webcams never hang on startup.
+        On DirectShow (CAP_DSHOW), requests 720p MJPG in high_camera_mode for earlier
+        distant face acquisition, with automatic fallback if a webcam rejects HD.
+        Avoids calling CAP_PROP_FRAME_WIDTH/HEIGHT on MSMF so USB webcams never hang.
         """
-        logger.info("Opening webcam at index %d...", self.camera_index)
+        logger.info(
+            "Opening webcam at index %d (high_camera_mode=%s)...",
+            self.camera_index,
+            self.high_camera_mode,
+        )
+        used_dshow = False
         cap = cv2.VideoCapture(self.camera_index, cv2.CAP_DSHOW)
-        if not cap.isOpened():
+        if cap.isOpened():
+            used_dshow = True
+            self._configure_dshow_high_res(cap)
+            # Verify HD frame actually reads cleanly; fall back to default DSHOW if not
+            if self.high_camera_mode:
+                ret_test, frame_test = cap.read()
+                if not ret_test or frame_test is None:
+                    logger.warning("HD mode failed test read on index %d; falling back to default resolution.", self.camera_index)
+                    cap.release()
+                    cap = cv2.VideoCapture(self.camera_index, cv2.CAP_DSHOW)
+        else:
             cap = cv2.VideoCapture(self.camera_index)
 
         if not cap.isOpened():
@@ -1678,14 +2128,26 @@ class VisionEngine:
                 fallback_idx,
             )
             cap = cv2.VideoCapture(fallback_idx, cv2.CAP_DSHOW)
-            if not cap.isOpened():
+            if cap.isOpened():
+                used_dshow = True
+                self._configure_dshow_high_res(cap)
+            else:
                 cap = cv2.VideoCapture(fallback_idx)
             if cap.isOpened():
                 self.camera_index = fallback_idx
 
         if cap.isOpened():
             cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
-            logger.info("Webcam opened successfully at index %d.", self.camera_index)
+            actual_w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH) or 0)
+            actual_h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT) or 0)
+            self._capture_resolution = (actual_w, actual_h)
+            logger.info(
+                "Webcam opened successfully at index %d (%dx%d, dshow=%s).",
+                self.camera_index,
+                actual_w,
+                actual_h,
+                used_dshow,
+            )
         return cap
 
     def _handle_window_key(self, key: int, raw_frame: np.ndarray) -> None:
@@ -1698,6 +2160,8 @@ class VisionEngine:
         elif key in (ord("w"), ord("W"), 9):  # 'W' or TAB -> switch camera
             next_idx = 0 if self.camera_index == 1 else 1
             self.switch_camera(next_idx)
+        elif key in (ord("h"), ord("H")):  # 'H' -> toggle High-Camera Mode
+            self.configure_vision(high_camera_mode=not self.high_camera_mode)
         elif key in (ord("c"), ord("C")):
             sid = f"Person_{self._quick_capture_counter}"
             self._quick_capture_counter += 1
@@ -1738,10 +2202,16 @@ class VisionEngine:
 
         try:
             while self._running:
-                if self._switch_camera_requested is not None:
-                    target_idx = self._switch_camera_requested
+                if self._switch_camera_requested is not None or self._reopen_camera_requested:
+                    target_idx = (
+                        self._switch_camera_requested
+                        if self._switch_camera_requested is not None
+                        else self.camera_index
+                    )
+                    was_reopen = self._reopen_camera_requested
                     self._switch_camera_requested = None
-                    if target_idx != self.camera_index:
+                    self._reopen_camera_requested = False
+                    if target_idx != self.camera_index or was_reopen:
                         self.camera_index = target_idx
                         cap.release()
                         time.sleep(0.1)
@@ -1752,24 +2222,29 @@ class VisionEngine:
                                 if self.camera_index == 1
                                 else f"Camera (Index {self.camera_index})"
                             )
-                            self._set_banner(f"Switched to {cam_desc}", duration=3.0)
+                            res_str = f"{self._capture_resolution[0]}x{self._capture_resolution[1]}"
+                            self._set_banner(f"Active: {cam_desc} ({res_str})", duration=3.0)
                         else:
                             self._set_banner(f"Could not open Camera {self.camera_index}", duration=3.0)
 
                 ret, frame = cap.read()
                 if not ret or frame is None:
-                    time.sleep(0.02)
+                    time.sleep(0.015)
                     continue
+
+                if self._capture_resolution == (0, 0):
+                    self._capture_resolution = (frame.shape[1], frame.shape[0])
 
                 with self._frame_lock:
                     self._latest_raw_frame = frame.copy()
+                    self._raw_frame_seq += 1
 
                 annotated_frame, _ = self._draw_annotations(frame)
 
                 if self.show_window:
                     try:
                         cv2.imshow(
-                            "camera_pc - Long-Distance Face Detector (C: Capture | W: Switch Cam | ESC: Hide)",
+                            "camera_pc - High-Mount Fast-Walk Face Detector (C: Capture | W: Switch | H: Mode | ESC: Hide)",
                             annotated_frame,
                         )
                         key = cv2.waitKey(1) & 0xFF
@@ -1777,13 +2252,23 @@ class VisionEngine:
                     except Exception as exc:
                         logger.warning("OpenCV window error: %s", exc)
                         self.show_window = False
+                else:
+                    time.sleep(0.002)
 
-                ok, buffer = cv2.imencode(".jpg", annotated_frame, [int(cv2.IMWRITE_JPEG_QUALITY), 80])
+                # Keep browser MJPEG preview lightweight (max 960px wide) while detection uses full HD
+                stream_frame = annotated_frame
+                if stream_frame.shape[1] > 960:
+                    stream_scale = 960.0 / float(stream_frame.shape[1])
+                    stream_frame = cv2.resize(
+                        stream_frame,
+                        (960, max(1, int(round(stream_frame.shape[0] * stream_scale)))),
+                        interpolation=cv2.INTER_AREA,
+                    )
+
+                ok, buffer = cv2.imencode(".jpg", stream_frame, [int(cv2.IMWRITE_JPEG_QUALITY), 78])
                 if ok:
                     with self._frame_lock:
                         self._latest_jpeg = buffer.tobytes()
-
-                time.sleep(0.015)
         finally:
             self._camera_active = False
             cap.release()
@@ -1837,11 +2322,20 @@ class VisionEngine:
             }
 
         return {
-            "engine": f"YuNet Long-Distance + {self.stability_frames}-Frame Stability + Similar-Array Disambiguation",
+            "engine": (
+                f"YuNet {'High-Mount HD' if self.high_camera_mode else 'Standard'} "
+                f"+ Sharpest-Crop {self.stability_frames}-Frame Fast-Walk Stability"
+            ),
             "face_recognition_installed": FACE_RECOGNITION_AVAILABLE,
             "camera_active": self._camera_active,
             "camera_index": self.camera_index,
             "camera_name": "Webcam (Index 1)" if self.camera_index == 1 else "PC Camera (Index 0)",
+            "high_camera_mode": self.high_camera_mode,
+            "capture_resolution": (
+                f"{self._capture_resolution[0]}x{self._capture_resolution[1]}"
+                if self._capture_resolution[0] > 0
+                else "Auto"
+            ),
             "known_faces_count": len(face_data),
             "total_arrays_count": len(self.known_face_encodings),
             "stability_frames": self.stability_frames,

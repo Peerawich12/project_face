@@ -53,6 +53,17 @@ def main() -> None:
         action="store_true",
         help="Do not automatically open the web browser on startup",
     )
+    parser.add_argument(
+        "--stability-frames",
+        type=int,
+        default=5,
+        help="Frames required to confirm a walking student (default: 5; range: 3-7)",
+    )
+    parser.add_argument(
+        "--eye-level",
+        action="store_true",
+        help="Disable High-Mount HD camera optimizations (use standard eye-level mode)",
+    )
 
     args = parser.parse_args()
 
@@ -60,6 +71,10 @@ def main() -> None:
     vision_engine.camera_index = args.camera
     vision_engine.cooldown_seconds = args.cooldown
     vision_engine.show_window = not args.hide_camera
+    vision_engine.configure_vision(
+        high_camera_mode=not args.eye_level,
+        stability_frames=args.stability_frames,
+    )
 
     # Load any existing face-shape arrays from face_data.json (No Excel required)
     vision_engine.load_known_faces()
@@ -71,7 +86,8 @@ def main() -> None:
     print("  SMOOTH FACE-SHAPE ARRAY DETECTOR (NO EXCEL REQUIRED FOR TEST)")
     print("=" * 72)
     print(f"  • Live Web Dashboard     : {url}")
-    print(f"  • PC Webcam (camera_pc)  : Device Index {args.camera} (Press 'R' to register label)")
+    print(f"  • PC Webcam (camera_pc)  : Device Index {args.camera} (Press 'C' capture | 'H' toggle High-Cam)")
+    print(f"  • Camera Mode / Speed    : {'HIGH-MOUNT HD (Fast-Walk)' if vision_engine.high_camera_mode else 'EYE-LEVEL'} | Stability: {vision_engine.stability_frames} frames")
     print(f"  • Face-Shape Array Store : {vision_engine.face_data_file.resolve()} (128-d Arrays, No Images)")
     print(f"  • Cooldown Debounce      : {args.cooldown} seconds ({args.cooldown // 60} mins)")
     print("-" * 72)

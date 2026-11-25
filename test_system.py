@@ -7,7 +7,7 @@ import numpy as np
 
 from data_sync import AttendanceStore
 from supabase_sync import normalize_classroom_code, parse_faceshape_to_samples
-from vision import TrackedFace, VisionEngine
+from vision import FaceCropSample, TrackedFace, VisionEngine
 
 
 class TestSchoolAttendanceSystem(unittest.TestCase):
@@ -210,6 +210,116 @@ class TestSchoolAttendanceSystem(unittest.TestCase):
         self.assertEqual(self.store._classify_scan_status("07:45:00"), "present")
         self.assertEqual(self.store._classify_scan_status("08:00:00"), "late")
         self.assertEqual(self.store._classify_scan_status("08:30:12"), "late")
+
+    def test_paired_crop_sharpness_beats_motion_blur(self):
+        tf = TrackedFace(box_full=(100, 200, 200, 100), stability_frames=5)
+        dummy = np.zeros((100, 100, 3), dtype=np.uint8)
+
+        sharp_crop = FaceCropSample(
+            crop_bgr=dummy,
+            rel_box=(10, 90, 90, 10),
+            rel_landmarks=None,
+            face_w=80,
+            det_score=0.92,
+            sharpness=240.0,
+            quality_score=0.88,
+            pitch_severity=0.4,
+            captured_ts=1.00,
+            frame_seq=10,
+        )
+        blurry_crop = FaceCropSample(
+            crop_bgr=dummy,
+            rel_box=(10, 90, 90, 10),
+            rel_landmarks=None,
+            face_w=80,
+            det_score=0.70,
+            sharpness=12.0,
+            quality_score=0.40,
+            pitch_severity=0.4,
+            captured_ts=1.05,
+            frame_seq=11,
+        )
+
+        tf.offer_crop_sample(sharp_crop)
+        tf.offer_crop_sample(blurry_crop)
+        # Sharp frame must be retained instead of overwritten by a blurry walking frame
+        chosen = tf.pop_pending_crop()
+        self.assertIsNotNone(chosen)
+        self.assertEqual(chosen.frame_seq, 10)
+        self.assertIsNone(tf.pop_pending_crop())
+
+    def test_high_camera_pitch_and_margin_disambiguation(self):
+        rng = np.random.default_rng(321)
+        base_a = rng.normal(0, 0.1, 128)
+        d_vec = rng.normal(0, 1, 128)
+        d_vec /= np.linalg.norm(d_vec)
+        base_b = base_a + d_vec * 0.58
+
+        samples_a = [(base_a + rng.normal(0, 0.012, 128)).tolist() for _ in range(4)]
+        samples_b = [(base_b + rng.normal(0, 0.012, 128)).tolist() for _ in range(4)]
+        with open(self.face_data_file, "w", encoding="utf-8") as f:
+            json.dump({"StudentA": samples_a, "StudentB": samples_b}, f)
+        self.vision.load_known_faces()
+
+        # Construct a pitched overhead vector ~0.44 away from StudentA (and far from StudentB)
+        ortho = rng.normal(0, 1, 128)
+        ortho -= np.dot(ortho, d_vec) * d_vec
+        ortho /= np.linalg.norm(ortho)
+        pitched_a = base_a + ortho * 0.435
+
+        # At close frontal eye-level (pitch=0, width=140), strict 0.42 rejects it
+        pred_frontal, _ = self.vision._match_encoding(pitched_a, face_width_px=140, pitch_severity=0.0)
+        self.assertEqual(pred_frontal, "Unknown")
+
+        # Under high-mounted camera (pitch=0.7, distant width=55) with clear separation from StudentB, matches StudentA
+        pred_high, _, margin = self.vision._match_encoding_detailed(
+            pitched_a, face_width_px=55, pitch_severity=0.7
+        )
+        self.assertEqual(pred_high, "StudentA")
+        self.assertGreater(margin, 0.05)
+
+        # Ambiguous midpoint vector between StudentA and StudentB is STILL rejected even in high-camera mode
+        midpoint = 0.5 * (base_a + base_b)
+        pred_mid, _ = self.vision._match_encoding(midpoint, face_width_px=55, pitch_severity=0.7)
+        self.assertEqual(pred_mid, "Unknown")
+
+    def test_high_camera_fast_walk_coasting_and_low_quality_resilience(self):
+        rng = np.random.default_rng(55)
+        enc = rng.normal(0, 0.1, 128)
+        tf = TrackedFace(box_full=(100, 180, 180, 100), stability_frames=5)
+        tf.pre_encoded_track_frames = 3
+
+        # High-margin overhead match (dist=0.395, strong_margin=True) gets pre-track credit -> 4/5
+        confirmed = tf.record_frame_match("09584", 0.395, enc, 0.20, strong_margin=True)
+        self.assertFalse(confirmed)
+        self.assertEqual(tf.stable_frames, 4)
+
+        # A motion-blurred unreadable walking frame (is_low_quality=True) does NOT erase progress
+        tf.record_frame_match("Unknown", 1.0, enc, 0.24, is_low_quality=True)
+        self.assertEqual(tf.stable_frames, 4)
+        self.assertEqual(tf.candidate_label, "09584")
+
+        # Velocity coasting across a missed detection frame keeps bounding box moving smoothly
+        tf.vx = 20.0
+        tf.vy = 4.0
+        old_cx = tf.center[0]
+        tf.coast_missed_frame(frame_w=1280, frame_h=720)
+        self.assertEqual(tf.missed_frames, 1)
+        self.assertGreater(tf.center[0], old_cx)
+
+        # Next tracked camera frame completes 5/5 confirmation immediately!
+        self.assertTrue(tf.advance_tracked_frame(0.28))
+        self.assertEqual(tf.label, "09584")
+        self.assertTrue(tf.is_stable)
+
+    def test_vision_config_toggle(self):
+        status_default = self.vision.get_status()
+        self.assertTrue(status_default["high_camera_mode"])
+        self.assertEqual(status_default["stability_frames"], 5)
+
+        updated = self.vision.configure_vision(high_camera_mode=False, stability_frames=4)
+        self.assertFalse(updated["high_camera_mode"])
+        self.assertEqual(updated["stability_frames"], 4)
 
 
 if __name__ == "__main__":

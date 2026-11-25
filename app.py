@@ -70,6 +70,11 @@ class StudentUpdateRequest(BaseModel):
     m: str = "-"
 
 
+class VisionConfigRequest(BaseModel):
+    high_camera_mode: Optional[bool] = None
+    stability_frames: Optional[int] = None
+
+
 @app.get("/", response_class=HTMLResponse)
 async def dashboard_page(request: Request):
     metrics = attendance_store.get_public_metrics()
@@ -639,6 +644,22 @@ async def api_switch_camera(camera_index: int):
         "camera_index": camera_index,
         "camera_name": "Webcam (Index 1)" if camera_index == 1 else f"Camera (Index {camera_index})",
         "vision": vision_engine.get_status(),
+    }
+
+
+@app.post("/api/vision-config")
+async def api_vision_config(payload: VisionConfigRequest):
+    """Update High-Camera Mode (HD + overhead pitch/backlight compensation) and stability frames."""
+    vision_status = await asyncio.to_thread(
+        vision_engine.configure_vision,
+        payload.high_camera_mode,
+        payload.stability_frames,
+    )
+    mode_label = "กล้องติดตั้งสูง (High-Mount HD)" if vision_status["high_camera_mode"] else "ระดับสายตาปกติ (Eye-Level)"
+    return {
+        "success": True,
+        "message": f"อัปเดตโหมดเป็น {mode_label} | ยืนยัน {vision_status['stability_frames']} เฟรม เรียบร้อย",
+        "vision": vision_status,
     }
 
 
